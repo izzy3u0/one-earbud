@@ -49,7 +49,7 @@ Render 保存的环境变量口令不会因为临时文件清空而自动更换�
 
 生产环境缺少网页口令时服务会拒绝启动；两个口令相同也会拒绝启动。未设置 `MCP_AUTH_TOKEN` 时 `/mcp` 返回 503，不会匿名开放。
 
-临时数据目录包含 `netease-auth.json`、`queue.json` 和 OAuth 的 `oauth-state.json`。Linux 上登录态和 OAuth 文件使用 0600 权限。OAuth 文件保存已注册客户端及访问令牌的哈希，属于私密数据，和整个数据目录一起保护，不要提交 Git。文件存在本地不等于免费实例会持久保存它们。
+临时数据目录包含 `netease-auth.json`、`queue.json` 和 OAuth 的 `oauth-state.json`。Linux 上登录态和 OAuth 文件使用 0600 权限。OAuth 文件保存已注册客户端、进行中的授权请求及授权码/访问令牌的哈希，属于私密数据，和整个数据目录一起保护，不要提交 Git。文件存在本地不等于免费实例会持久保存它们。
 
 ## 2. 手机连接网易云并开始放歌
 
@@ -80,7 +80,11 @@ ChatGPT 的远程插件不能假定支持手工填写静态 API Key/Header，因
 
 默认仅接受 ChatGPT 官方 `https://chatgpt.com/connector_platform_oauth_redirect` 和 `https://chatgpt.com/connector/oauth/<callback_id>` 回调。其他客户端需要在 `MCP_OAUTH_REDIRECT_URIS` 中填写其**精确**回调 URL。
 
-OAuth 使用 PKCE S256、一次性授权码、限定 `/mcp` 的 resource 和 `music` scope。访问令牌有效期 1 小时，刷新令牌 30 天且每次刷新轮换，但这些有效期以服务器上的授权状态仍存在为前提。免费版状态放在临时目录，重启、重新部署或文件系统重置后可能提前失效，需要重新连接 ChatGPT；进行中的授权页面也需重开。更换 `MCP_AUTH_TOKEN` 并重新部署会撤销已有 OAuth 授权。
+OAuth 使用 PKCE S256、一次性授权码、限定 `/mcp` 的 resource 和 `music` scope。授权页有效期 5 分钟，授权码有效期 1 分钟，均使用服务器的 Unix 时间毫秒计时，与浏览器时区无关。授权请求和授权码与客户端注册、令牌一起原子写入 `oauth-state.json`，只要文件还在，进程重新启动后可以继续尚未超时的流程；不再只依赖内存。
+
+授权表单同时在提交地址和隐藏字段携带随机请求标识，避免内嵌浏览器转发表单时丢失隐藏字段；口令仍只通过 HTTPS POST 提交，不放进 URL。授权页的表单安全策略允许已验证的 ChatGPT 回调来源，避免提交成功后回跳被浏览器拦截。`state`、`client_id`、`redirect_uri`、PKCE challenge 和 resource 均由服务器保存，提交口令时不能替换它们。
+
+访问令牌有效期 1 小时，刷新令牌 30 天且每次刷新轮换，但这些有效期以服务器上的授权状态仍存在为前提。免费版文件系统被重启、重新部署或平台重置时可能清空，届时已有令牌和正在进行的授权仍会失效，需要重新连接 ChatGPT；若原客户端注册也已丢失，删除旧连接后重新添加以触发 DCR。更换 `MCP_AUTH_TOKEN` 并重新部署会撤销已有 OAuth 授权。此次修复兼容现有口令和文件格式，不需要重新生成口令。
 
 ### 支持静态 Bearer 的 MCP 客户端
 
@@ -142,6 +146,7 @@ music_share 返回的是卡片数据，rendered=false 时不要说已经在 Chat
 | 授权页不出现或 discovery 404 | 设置 `MCP_PUBLIC_URL` 为当前 HTTPS origin，不带 `/mcp`；Render 默认使用 `RENDER_EXTERNAL_URL`。 |
 | OAuth `invalid_target` | 客户端 resource 必须与 metadata 的 `https://域名/mcp` 完全一致。自定义域名改完后重新连接。 |
 | OAuth 回调不支持 | 核对实际回调 URL；其他客户端加入 `MCP_OAUTH_REDIRECT_URIS`，不要填通配符。 |
+| 点击授权后提示请求缺失 / 已使用或状态重置 / 已过期 | 三者分别代表表单请求标识缺失、请求已消费或文件系统清空、真正超过 5 分钟。关闭旧授权标签页，确认 Render 已部署最新 main 后从 ChatGPT 发起新连接；文件系统清空后删除旧连接重新添加。响应头 `X-One-Earbud-OAuth-Error` 只含原因码，不包含口令、授权码或歌曲信息。 |
 | `/api/music` 返回 401 | 在手机首页或扫码页保存 `ONE_EARBUD_TOKEN`。Safari 和主屏幕 PWA 可能需要分别填写。 |
 | `MUSIC_NOT_LOGGED_IN` / `MUSIC_LOGIN_EXPIRED` | 去扫码页重登；免费实例重启、重新部署、休眠或文件系统重置后丢登录属于临时存储限制。 |
 | 重启后队列为空 / ChatGPT 授权失效 | 免费版数据可能已清空；重新导入队列、扫码，并重新连接 ChatGPT。 |
