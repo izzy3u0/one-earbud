@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+services:
+  - type: web
+    name: one-earbud
+    runtime: node
+    repo: https://github.com/izzy3u0/one-earbud
+    branch: main
+    region: singapore
+    plan: 0.5c-512mb
+    numInstances: 1
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    disk:
+      name: one-earbud-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ONE_EARBUD_DATA_DIR
+        value: /var/data/one-earbud
+      # Enter two different secrets in Render during initial Blueprint creation.
+      - key: ONE_EARBUD_TOKEN
+        sync: false
+      - key: MCP_AUTH_TOKEN
+        sync: false
