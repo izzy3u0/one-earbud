@@ -374,11 +374,9 @@ player.subscribe(syncMusicCards);
 const PLAY_NOW_FRESH_MS = 3 * 60 * 1000;
 const PLAY_NOW_DONE_KEY = 'one-earbud.playnow.done';
 function playNowDone() { try { return JSON.parse(localStorage.getItem(PLAY_NOW_DONE_KEY) || '[]'); } catch (_) { return []; } }
-function markPlayNowDone(id) { try { const a = playNowDone().filter(x => x !== id); a.push(id); localStorage.setItem(PLAY_NOW_DONE_KEY, JSON.stringify(a.slice(-40))); } catch (_) {} }
 function checkPlayNow(el) {
   const id = el.dataset.playNow; if (!id) return;
   if (playNowDone().includes(id)) return;
-  markPlayNowDone(id);
   if (Date.now() - (Number(el.dataset.playAt) || 0) > PLAY_NOW_FRESH_MS) return;
   player.playFromTa(id, { songId: el.dataset.musicSong, title: el.dataset.musicTitle, artist: el.dataset.musicArtist, durationMs: Number(el.dataset.musicDur) || 0 }).catch(() => {});
 }

@@ -14,11 +14,14 @@ export class ApiError extends Error {
 export async function apiRequest(path, opts = {}) {
   const init = { method: opts.method || 'GET', headers: Object.assign({ Accept: 'application/json' }, authHeaders()) };
   if (opts.body !== undefined && init.method !== 'GET') { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
-  const res = await fetch(path, init);
-  let body = null; try { body = await res.json(); } catch (_) {}
-  if (!res.ok || (body && body.ok === false)) {
-    // 后端错误是 { ok:false, error:代码, message:给人看的话 }：message 给人，code 给程序判断
-    throw new ApiError((body && body.message) || (body && body.error) || ('Request failed (' + res.status + ')'), { status: res.status, code: (body && body.error) || '' });
-  }
-  return body;
+  const controller = new AbortController(); init.signal = controller.signal;
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(path, init);
+    let body = null; try { body = await res.json(); } catch (_) {}
+    if (!res.ok || (body && body.ok === false)) {
+      throw new ApiError((body && body.message) || (body && body.error) || ('Request failed (' + res.status + ')'), { status: res.status, code: (body && body.error) || '' });
+    }
+    return body;
+  } finally { clearTimeout(timeout); }
 }

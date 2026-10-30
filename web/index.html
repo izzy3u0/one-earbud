@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#d995ad"><meta name="apple-mobile-web-app-capable" content="yes">
+<title>分你一只耳机</title><link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/styles/music.css?v=mcp1">
+<style>
+body{margin:0;background:#f6f3f7;color:#2b2830;font-family:system-ui,sans-serif}main{max-width:640px;margin:auto;padding:32px 18px}h1{font-size:26px}p{line-height:1.8}button,input{font:inherit;padding:12px;border:1px solid #d9cbd6;border-radius:14px}button{background:#fff;cursor:pointer}a{color:#86556b}.actions{display:flex;gap:10px;flex-wrap:wrap}form{display:flex;gap:8px;flex-wrap:wrap}input{min-width:0;flex:1}#status{color:#755d6e}#share{white-space:pre-wrap;background:#fff;border-radius:14px;padding:16px}#bar{margin-top:24px}
+</style></head><body><main>
+<h1>分你一只耳机</h1><p>手机在这里放歌，ChatGPT 陪你一起听。</p>
+<form id="access"><label for="token">网页访问口令</label><input id="token" type="password" autocomplete="off" placeholder="ONE_EARBUD_TOKEN"><button>保存</button></form>
+<p id="status" role="status">读取连接状态…</p>
+<div class="actions"><button id="search">搜歌 / 我的歌单</button><button id="queue">播放列表</button><a href="/login.html">网易云扫码登录</a></div>
+<div id="bar"></div><p>保持此页或主屏幕 App 打开，约 2 秒同步一次。先手动播放一首后，TA 就能远程切歌。iPhone 后台可能暂停同步，回到页面会重新同步。</p>
+<p id="share" hidden></p>
+</main><script type="module" src="/app.js?v=mcp1"></script></body></html>

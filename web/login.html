@@ -9,6 +9,6 @@ main{max-width:460px;margin:0 auto;padding:28px 18px}
 .oe-btn{border:0;border-radius:999px;padding:10px 18px;background:#f0ecf3;color:#2b2830;font:inherit;font-size:14px}
 .oe-btn.is-go{background:#d995ad;color:#fff}
 .oe-qr{width:220px;height:220px;image-rendering:pixelated;background:#fff;border-radius:12px;padding:8px}
-</style></head><body><main id="app"></main>
-<script type="module">import { mountMusicLogin } from './login.js'; mountMusicLogin({ host: document.getElementById('app') });</script>
+</style></head><body><main><a href="/">← 返回听歌页 / 设置访问口令</a><form id="access"><p class="oe-help">网页访问口令（ONE_EARBUD_TOKEN）</p><input type="password" name="token" autocomplete="off" required><button class="oe-btn">保存口令</button></form><div id="app"></div></main>
+<script type="module">import { mountMusicLogin } from './login.js'; mountMusicLogin({ host: document.getElementById('app') }); document.getElementById('access').addEventListener('submit', e => { e.preventDefault(); localStorage.setItem('one-earbud.token', e.target.elements.token.value.trim()); location.reload(); });</script>
 </body></html>

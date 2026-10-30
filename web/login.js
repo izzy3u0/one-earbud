@@ -15,7 +15,7 @@ export function mountMusicLogin({ host }) {
     if (st.connected) {
       const p = st.profile || {};
       body.innerHTML = '<section class="oe-card"><div class="oe-label">已连上网易云</div><div class="oe-value">' + escapeHtml(p.nickname || '') + (st.vip ? ' · 会员' : '') + '</div>'
-        + '<p class="oe-help">回到聊天页，打开听歌入口就能搜歌、放歌。</p><button type="button" class="oe-btn" data-logout>退出登录</button></section>';
+        + '<p class="oe-help"><a href="/">回到听歌页</a>，就能搜歌、放歌。</p><button type="button" class="oe-btn" data-logout>退出登录</button></section>';
       body.querySelector('[data-logout]').addEventListener('click', async () => { if (!confirm('退出网易云登录？')) return; await apiRequest(API_BASE + '/logout', { method: 'POST' }).catch(() => {}); render(); });
       return;
     }

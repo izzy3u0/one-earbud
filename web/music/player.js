@@ -122,7 +122,8 @@ function report() {
   const body = { songId: state.song.songId, title: state.song.title, artist: state.song.artist, positionMs: positionMs(), durationMs: durationMs(), playing: state.playing && !state.buffering };
   apiRequest(API_BASE + '/now-playing', { method: 'POST', body }).catch(() => {});
   clearInterval(heartbeat);
-  if (state.playing && !state.buffering) heartbeat = setInterval(report, HEARTBEAT_MS);
+  // Paused state stays fresh too, until authority's existing ten-minute cutoff.
+  heartbeat = setInterval(report, HEARTBEAT_MS);
 }
 
 async function loadUrl(songId) {
@@ -223,7 +224,8 @@ export async function play(song, atMs) {
     audio.src = await loadUrl(songId).catch(() => audio.src);
   }
   if (Number.isFinite(atMs)) audio.currentTime = Math.max(0, atMs) / 1000;
-  try { await audio.play(); } catch (e) { state.error = '点一下播放键开始'; }
+  // Safari can leave play() pending on a stalled connection; keep remote polling alive.
+  audio.play().catch(() => { state.error = '点一下播放键开始'; emit(); });
   emit();
 }
 
@@ -363,11 +365,54 @@ export async function playSingle(song, atMs) {
 }
 // TA直接放的那首：服务器已经把它插进列表、设成当前，
 // 这边刷新列表、按那一项放。YOU正在听就直接切过去；播放器停着时苹果不让自己出声，
-// play() 会留下「点一下播放键开始」，听歌栏上已经摆好这首，YOU点一下就响。
-export async function playFromTa(itemId, song) {
+// 只准备音频地址，听歌栏摆好这首，YOU点一下就响。
+export async function playFromTa(itemId) {
   await refreshQueue();
-  if (itemId && queue.items.some(x => x.id === itemId)) { await playQueueItem(itemId, { taPlayed: true }); return; }
-  if (song && song.songId) await playSingle(song, 0);
+  const item = queue.items.find(x => x.id === itemId);
+  // Ignore superseded commands/cards and share one dedupe ledger with polling.
+  if (!item || queue.currentId !== itemId) return;
+  const key = 'one-earbud.playnow.done';
+  let done = [];
+  try { done = JSON.parse(localStorage.getItem(key) || '[]'); } catch (_) {}
+  if (done.includes(itemId)) return;
+  try { localStorage.setItem(key, JSON.stringify([...done.slice(-39), itemId])); } catch (_) {}
+  const wasPlaying = !!(audio && !audio.paused && state.playing && !state.closed);
+  state.queueItemId = item.id;
+  emitQueue({ taAdded: item, taPlayed: true });
+  startQueuePoll();
+  if (wasPlaying) { await play(item, 0); return; }
+  // No audio.play() here: never attempt to bypass Safari's user-gesture requirement.
+  if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
+  wantPlay = false;
+  state.song = { songId: item.songId, title: item.title, artist: item.artist, coverUrl: item.coverUrl, durationMs: item.durationMs };
+  state.lyrics = []; state.closed = false; state.playing = false; state.buffering = false; state.loading = false;
+  state.error = '点一下播放键开始';
+  prefetched = null; prefetchFor = null;
+  saveLast(); emit();
+  await warmRestored();
+  report();
+}
+
+// One small authenticated poll serves both queue updates and remote play_now.
+// Start even when paused/empty so an open PWA can prepare its first remote song.
+let syncInFlight = null;
+export function syncPlayback() {
+  if (syncInFlight) return syncInFlight;
+  syncInFlight = (async () => {
+    try {
+      const result = await apiRequest(API_BASE + '/playback-sync');
+      takeQueue(result);
+      const command = result && result.command;
+      if (command && command.expiresAt > Date.now() && command.itemId === queue.currentId) await playFromTa(command.itemId);
+    } catch (_) { /* Offline/auth failures retry when the page is online again. */ }
+  })().finally(() => { syncInFlight = null; });
+  return syncInFlight;
+}
+if (typeof window !== 'undefined') {
+  setInterval(syncPlayback, 2000);
+  window.addEventListener('online', syncPlayback);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncPlayback(); report(); } });
+  setTimeout(syncPlayback, 0);
 }
 // 写信挑歌时的试听：只听一下，不进列表。
 export function preview(song) { state.queueItemId = null; return play(song, 0); }

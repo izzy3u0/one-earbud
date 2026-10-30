@@ -28,7 +28,9 @@ test('扫码登录：只认自己发出的 key；成功后存 cookie，公开状
   assert.strictEqual(r.status, 'success');
   assert.strictEqual(JSON.stringify(a.status()).includes('MUSIC_U'), false);
   assert.strictEqual(a.status().connected, true);
-  assert.strictEqual((fs.statSync(file).mode & 0o777), 0o600);
+  // Windows exposes DOS attributes through mode bits, not POSIX permissions.
+  // Linux/Render must still enforce owner-only read/write.
+  if (process.platform !== 'win32') assert.strictEqual((fs.statSync(file).mode & 0o777), 0o600);
   await a.search('晴天');
 });
 

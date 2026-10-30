@@ -1,5 +1,7 @@
 # 安全与免责
 
+远程 MCP 使用独立 `MCP_AUTH_TOKEN`；`ONE_EARBUD_TOKEN` 继续用于手机 Web/API，两者不能相同。ChatGPT 通过官方 SDK OAuth 授权后使用独立 Bearer 令牌，不能取得网易云 cookie。登录和 OAuth 私密文件只存在 `ONE_EARBUD_DATA_DIR`。公网部署必须配置网页口令，MCP 未配置口令时关闭。完整步骤见 [MCP.md](MCP.md)。
+
 ## 登录信息存在哪
 
 - 网易云登录态：服务器 `ONE_EARBUD_DATA_DIR/netease-auth.json`，文件权限 0600，原子写入。
@@ -9,6 +11,8 @@
 ## 绝不能提交到仓库的
 
 - `.env`
+- `.env.*`（只有不含真实密钥的 `.env.example` 可提交）
+- 任何位置的 `netease-auth.json`、`oauth-state.json` 及其临时文件
 - `data/` 整个目录（登录态、播放列表）
 - 你自己的域名、服务器地址、网易云账号 id、任何密钥
 

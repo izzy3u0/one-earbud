@@ -101,6 +101,8 @@ function createMusicQueueStore(options) {
       room(q, 1);
       const item = mataItem(input.song, by, input.note);
       const at = q.items.findIndex(x => x.id === q.currentId);
+      // play_now accepts the same 300-character note as its card/lyrics page.
+      if (by === 'ta') item.note = str(input.note, 300);
       q.items.splice(at < 0 ? q.items.length : at + 1, 0, item);
       q.currentId = item.id;
       write(q);

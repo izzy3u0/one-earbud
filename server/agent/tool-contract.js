@@ -42,6 +42,7 @@ function createTaMusicTool(options) {
   const authority = options && options.authority;
   if (!authority || typeof authority.search !== 'function') throw new TypeError('music_tool capability requires the music authority');
   const shared = new Map(); // requestId -> result（幂等，只留最近 50 个）
+  const inFlight = new Map(); // Coalesce concurrent retries, including across MCP transports.
 
   async function wrap(fn) {
     try { return await fn(); }
@@ -59,6 +60,16 @@ function createTaMusicTool(options) {
     annotations: Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, capabilityCategory: TA_MUSIC_CAPABILITY_CATEGORY }),
     inputSchema: TA_MUSIC_INPUT_SCHEMA,
     async handler(input) {
+      const key = input && ['share', 'play_next', 'queue_add', 'play_now'].includes(input.action) && input.requestId
+        ? input.action + ':' + String(input.requestId).trim() : '';
+      if (key && inFlight.has(key)) return inFlight.get(key);
+      const pending = run(input);
+      if (key) inFlight.set(key, pending);
+      try { return await pending; } finally { if (key) inFlight.delete(key); }
+    }
+  });
+
+  async function run(input) {
       input = input || {};
       const action = typeof input.action === 'string' ? input.action : '';
       if (action === 'search') {
@@ -74,15 +85,16 @@ function createTaMusicTool(options) {
         return { ok: true, action, song: { songId, title: song.title, artist: song.artist }, lines: song.lyrics.map(l => ({ index: l.index, time: fmt(l.timeMs), text: l.text, trans: l.trans || undefined })) };
       }
       if (action === 'now_playing') {
-        const cur = authority.nowPlaying();
+        const cur = authority.nowPlayingDetails ? await authority.nowPlayingDetails() : authority.nowPlaying();
         if (!cur) return { ok: true, action, listening: false };
-        return { ok: true, action, listening: true, state: cur.state, songId: cur.songId, title: cur.title, artist: cur.artist, position: fmt(cur.positionMs), duration: fmt(cur.durationMs), text: authority.renderNowPlaying() };
+        return { ok: true, action, listening: true, fresh: true, state: cur.state, songId: cur.songId, title: cur.title, artist: cur.artist, position: fmt(cur.positionMs), duration: fmt(cur.durationMs), positionMs: cur.positionMs, durationMs: cur.durationMs, lyricContext: cur.lyricContext, text: authority.renderNowPlaying() };
       }
       if (action === 'share') {
         const songId = String(input.songId || '');
         if (!/^\d+$/.test(songId)) throw musicToolError('song_id_required', 'share 需要 songId。');
         const requestId = typeof input.requestId === 'string' ? input.requestId.trim() : '';
-        if (requestId && shared.has(requestId)) return shared.get(requestId);
+        const key = action + ':' + requestId;
+        if (requestId && shared.has(key)) return shared.get(key);
         const song = await wrap(() => authority.song(songId));
         const idx = Array.from(new Set((Array.isArray(input.lineIndexes) ? input.lineIndexes : []).filter(n => Number.isInteger(n)))).sort((a, b) => a - b).slice(0, SHARE_LINES_MAX);
         const bad = idx.filter(i => !song.lyrics[i]);
@@ -91,7 +103,7 @@ function createTaMusicTool(options) {
         const note = typeof input.note === 'string' ? input.note.trim().slice(0, 300) : '';
         const card = { kind: lines.length ? 'lyric' : 'song', songId, title: song.title, artist: song.artist, coverUrl: song.coverUrl, durationMs: song.durationMs, lines, note, from: 'ta' };
         const out = { ok: true, action, delivery: { kind: 'music', card } };
-        if (requestId) { shared.set(requestId, out); if (shared.size > 50) shared.delete(shared.keys().next().value); }
+        if (requestId) { shared.set(key, out); if (shared.size > 50) shared.delete(shared.keys().next().value); }
         return out;
       }
       if (action === 'queue') {
@@ -133,18 +145,19 @@ function createTaMusicTool(options) {
         try { r = authority.queue.playNow({ by: 'ta', song: { songId, title: song.title, artist: song.artist, coverUrl: song.coverUrl, durationMs: song.durationMs }, note }); }
         catch (e) { throw musicToolError(String(e && e.message || 'queue_failed'), String(e && e.message || '')); }
         const itemId = (r.added[0] && r.added[0].id) || r.queue.currentId || '';
+        const playback = authority.requestPlayback ? authority.requestPlayback(itemId) : undefined;
         const listening = typeof authority.nowPlaying === 'function' ? authority.nowPlaying() : null;
         const card = { kind: 'song', songId, title: song.title, artist: song.artist, coverUrl: song.coverUrl, durationMs: song.durationMs, lines: [], note, from: 'ta', playNow: { itemId, at: Date.now() } };
         const out = { ok: true, action, song: { songId, title: song.title, artist: song.artist },
           youWereListening: Boolean(listening && listening.state === 'playing'),
-          text: listening && listening.state === 'playing' ? 'YOU 正在听歌，卡片一到就会切过去。' : 'YOU 现在没在放歌：卡片和听歌栏会摆好这首，YOU 点一下才响。',
+          playback,
+          text: playback ? '切歌指令已发送，等待手机同步；尚未确认出声。未在播放的手机会先准备歌曲，等 YOU 点播放。' : '等待宿主接收歌卡；未在播放时需要 YOU 点播放。',
           delivery: { kind: 'music', card } };
         if (requestId) { shared.set(key, out); if (shared.size > 50) shared.delete(shared.keys().next().value); }
         return out;
       }
       throw musicToolError('unknown_action', 'action 只支持 search / lyrics / share / now_playing / queue / play_next / queue_add / play_now。');
-    }
-  });
+  }
 }
 
 module.exports = { createTaMusicTool, TA_MUSIC_CAPABILITY_ID };

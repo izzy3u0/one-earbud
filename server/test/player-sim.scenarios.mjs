@@ -16,9 +16,10 @@ async function finish() { // 放到 -20 秒触发预取（这里总长 10 秒，
   theAudio.currentTime = 10; theAudio.paused = true; theAudio.dispatchEvent(new Event('ended')); await tick(); await tick();
 }
 const cur = () => { const q = P.getQueue(); const st = P.getState(); const i = q.items.findIndex(x => x.id === st.queueItemId); return { song: st.song && st.song.songId, idx: i, playing: st.playing }; };
+let failures = 0;
 async function scenario(name, ids, mode, body) {
   api.setItems(ids, mode); await P.refreshQueue(); await P.playQueueItem(P.getQueue().items[0].id); await new Promise(r => setTimeout(r, 30 + (globalThis.API_DELAY || 0) * 4));
-  const out = await body(); console.log((out.ok ? 'OK  ' : 'FAIL') + ' ' + name + ' -> ' + JSON.stringify(out.info));
+  const out = await body(); if (!out.ok) failures++; console.log((out.ok ? 'OK  ' : 'FAIL') + ' ' + name + ' -> ' + JSON.stringify(out.info));
 }
 await scenario('seq 3首 放完接第2首', [1,2,3], 'seq', async () => { await finish(); const c = cur(); return { ok: c.song === '2' && c.playing, info: c }; });
 await scenario('seq 预取后再加一首(下一首播放)', [1,2,3], 'seq', async () => {
@@ -66,4 +67,4 @@ await scenario('连着两首放不了也跳过', [1,5,55,4], 'seq', async () => 
 await scenario('放不了时点播放不会响上一首', [1,5,55], 'seq', async () => { await finish(); await new Promise(r => setTimeout(r, 50)); const src = theAudio.getAttribute('src'); return { ok: src == null, info: { src, err: P.getState().error } }; });
 await scenario('播放中音频报错 → 自己换地址接着放，不卡加载中', [1,2], 'seq', async () => { theAudio.dispatchEvent(new Event('error')); await new Promise(r => setTimeout(r, 200)); const st = P.getState(); const c = cur(); return { ok: c.song === '1' && c.playing && !st.loading, info: Object.assign(c, { loading: st.loading }) }; });
 await scenario('暂停后地址过期再点播放 → 响', [1,2], 'seq', async () => { P.toggle(); await tick(); const realNow = Date.now; Date.now = () => realNow() + 20 * 60 * 1000; P.toggle(); await new Promise(r => setTimeout(r, 200)); Date.now = realNow; const st = P.getState(); return { ok: st.playing && !st.loading, info: { playing: st.playing, loading: st.loading, err: st.error } }; });
-process.exit(0);
+process.exit(failures ? 1 : 0);

@@ -4,8 +4,9 @@
 function sendError(res, error, tag) {
   const status = Number(error && error.status) || 500;
   const code = (error && error.code) || 'MUSIC_FAILED';
-  if (status >= 500) console.warn('[vnext:music]', tag, code, String(error && error.message || '').slice(0, 200));
-  return res.status(status).json({ ok: false, error: code, message: status < 500 || code.startsWith('MUSIC_') ? String(error.message || '') : '' });
+  // Never log upstream errors: they can contain auth headers or local secret paths.
+  if (status >= 500) console.warn('[one-earbud:music] request failed', tag);
+  return res.status(status).json({ ok: false, error: /^MUSIC_[A-Z_]+$/.test(code) ? code : 'MUSIC_FAILED', message: status < 500 && /^MUSIC_[A-Z_]+$/.test(code) ? String(error.message || '') : '音乐请求失败，请稍后重试' });
 }
 
 function mountMusicRoutes(router, authority) {
@@ -55,6 +56,10 @@ function mountMusicRoutes(router, authority) {
     };
   }
   router.get('/music/queue', q(() => authority.queue.get()));
+  router.get('/music/playback-sync', (req, res) => {
+    nostore(res); if (!guard(res)) return;
+    res.json({ ok: true, ...authority.playbackSync() });
+  });
   router.get('/music/playlists', async (req, res) => {
     nostore(res); if (!guard(res)) return;
     try { res.json({ ok: true, playlists: await authority.playlists() }); } catch (e) { sendError(res, e, 'playlists'); }

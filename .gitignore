@@ -1,4 +1,10 @@
 node_modules/
 data/
 .env
+.env.*
+!.env.example
+netease-auth.json
+netease-auth.json.*
+oauth-state.json
+oauth-state.json.*
 *.log

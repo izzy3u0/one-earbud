@@ -14,15 +14,17 @@
 
 ## 五步跑起来（最小可跑）
 
+**ChatGPT + 独立手机播放器 / PWA + Render 部署：请先看 [docs/MCP.md](docs/MCP.md)。** 本分支保留原组件接入方式，并提供可直接打开的 `/` 听歌首页，以及带独立鉴权的远程 `/mcp`。使用 Node 22+。
+
 ```bash
-git clone https://github.com/isle0306ral-hub/one-earbud.git && cd one-earbud
+git clone https://github.com/izzy3u0/one-earbud.git && cd one-earbud
 npm install
-cp .env.example .env        # 填 ONE_EARBUD_TOKEN（随便一串足够长的字符）
+cp .env.example .env        # 填两个不同的长随机口令 ONE_EARBUD_TOKEN / MCP_AUTH_TOKEN
 npm start                   # 默认 http://localhost:8787
 ```
 
 1. 打开 `http://你的服务器:8787/login.html`，用网易云 App 扫码登录
-2. 在你的聊天页里挂上听歌栏和搜歌抽屉（见 docs/INTEGRATION.md 第 3 节）
+2. 打开 `/` 保存网页口令，使用现成的听歌页；也可在自己的聊天页挂组件（见 docs/INTEGRATION.md 第 3 节）
 3. 搜一首歌，点播放，听到声音——跑通了
 
 之后再一步步接：播放列表和歌单 → 把 TA 接进来 → 换成你们自己的名字、颜色和图标。每一步做完都能用，也可以停在任何一步。
@@ -36,11 +38,12 @@ npm start                   # 默认 http://localhost:8787
 | [docs/CUSTOMIZE.md](docs/CUSTOMIZE.md) | 人 | 名字、颜色、图标、文案，哪些能换、在哪换 |
 | [docs/PITFALLS.md](docs/PITFALLS.md) | 人和机 | 真实踩过的坑，尤其是 iPhone 上的 |
 | [docs/SECURITY.md](docs/SECURITY.md) | 人 | 登录信息存在哪、什么绝不能提交、免责 |
+| [docs/MCP.md](docs/MCP.md) | 人和机 | ChatGPT、远程 MCP、手机切歌、Render 部署和持久化磁盘 |
 
 ## 测试
 
 ```bash
-npm test     # 后端 26 个测试 + 播放器模拟 22 个场景
+npm test     # 原有测试 + MCP/OAuth/手机同步集成 + 播放器模拟
 ```
 
 ## 说明

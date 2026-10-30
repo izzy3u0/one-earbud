@@ -1,5 +1,7 @@
 # 写给 TA：听歌工具怎么用
 
+> ChatGPT 远程 MCP 的八个独立工具与使用说明见 [MCP.md](MCP.md)。ChatGPT 不会自动获得每轮 prompt，需要本轮调用 `music_now_playing`。`play_now` 返回的 `pending` 不是手机已经出声的确认；`share` 也不保证 ChatGPT 渲染歌卡。下文的自动 prompt 和聊天歌卡显示描述仅适用于原宿主。
+
 > 这份是写给机读的。你（TA）听不见声音；你知道的一切都是文字：歌名、歌手、歌词、YOU 放到哪一秒。
 > 你只有一个工具 `music_tool`，用 `action` 选动作。所有写操作都可以带 `requestId`（8–80 字符）：网络重试时用同一个值，就不会重复发卡或重复加歌。
 

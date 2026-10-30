@@ -7,6 +7,7 @@ const netease = require('./netease');
 const { createMusicQueueStore } = require('./queue');
 const { createMusicAuthStore } = require('./store');
 const { createNowPlaying } = require('./now-playing');
+const { createPlaybackSync } = require('./playback-sync');
 
 const YOU_NAME = process.env.ONE_EARBUD_YOU_NAME || 'YOU';
 function fmt(ms) { const s = Math.floor((ms || 0) / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
@@ -28,6 +29,7 @@ function createMusicAuthority(options) {
     return uidCache;
   }
   const now = options.now || (() => Date.now());
+  const playback = createPlaybackSync({ now });
   const lyricCache = new Map(); // songId -> lines，只留最近 20 首
   const pendingQr = new Map();  // key -> expiresAt
 
@@ -49,6 +51,8 @@ function createMusicAuthority(options) {
     status() { return store.publicState(); },
     // 播放列表：YOU和TA共用的一份。规矩在 queue.js 里（TA只能往后加）。
     queue,
+    requestPlayback(itemId) { return playback.publish(itemId); },
+    playbackSync() { const q = queue.get(); return { queue: q, command: playback.current(q) }; },
     // 导入：YOU的歌单。账号 id 早先存成了空的，缺就现拿一次，放内存里。
     async playlists() {
       const uid = await myUid();
@@ -124,6 +128,18 @@ function createMusicAuthority(options) {
     },
     clearNowPlaying() { nowPlaying.clear(); },
     nowPlaying() { return nowPlaying.current(now()); },
+    async nowPlayingDetails() {
+      let cur = nowPlaying.current(now());
+      if (!cur) return null;
+      const songId = cur.songId;
+      const lines = await lyricsCached(songId).catch(() => []);
+      // Don't return an old heartbeat if it expired or the phone switched while fetching lyrics.
+      cur = nowPlaying.current(now());
+      if (!cur || cur.songId !== songId) return null;
+      let k = -1;
+      for (let i = 0; i < lines.length; i++) if (lines[i].timeMs <= cur.positionMs + 300) k = i;
+      return { ...cur, lyricContext: { previous: lines[k - 1] || null, current: lines[k] || null, next: lines[k + 1] || null } };
+    },
     // 给TA的 prompt 用；没在听返回 ''
     renderNowPlaying() {
       const cur = nowPlaying.current(now());
