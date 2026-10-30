@@ -6,21 +6,18 @@ services:
     repo: https://github.com/izzy3u0/one-earbud
     branch: main
     region: singapore
-    plan: 0.5c-512mb
+    plan: free
     numInstances: 1
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /healthz
     autoDeployTrigger: commit
-    disk:
-      name: one-earbud-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
       - key: ONE_EARBUD_DATA_DIR
-        value: /var/data/one-earbud
+        # Ephemeral: login, queue and OAuth state can be lost on restart/redeploy.
+        value: /tmp/one-earbud
       # Enter two different secrets in Render during initial Blueprint creation.
       - key: ONE_EARBUD_TOKEN
         sync: false
