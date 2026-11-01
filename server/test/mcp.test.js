@@ -48,7 +48,7 @@ test('MCP SDK initialize, tools/list, search, lyrics, share and safe errors', as
   const client = await connect(t, url);
   assert.equal(client.getServerVersion().name, 'one-earbud');
   const listed = await client.listTools();
-  assert.deepEqual(listed.tools.map(x => x.name).sort(), ['now_playing','lyrics','search','queue','share','play_next','queue_add','play_now'].map(x => 'music_' + x).sort());
+  assert.deepEqual(listed.tools.map(x => x.name).sort(), ['now_playing','lyrics','search','queue','share','play_next','queue_add','play_now','open_player','player_state','player_control'].map(x => 'music_' + x).sort());
   assert.equal((await call(client, 'search', { query: 'Test' })).songs[0].songId, '123');
   assert.equal((await call(client, 'lyrics', { songId: '123' })).lines[1].trans, '测试 1');
   const share = await call(client, 'share', { songId: '123', note: 'Test', lineIndexes: [1] });
@@ -127,6 +127,70 @@ test('single service serves the player/PWA, login and health; secrets/data are n
   assert.equal((await fetch(disabled + '/mcp')).status, 503);
 });
 
+test('MCP Apps resource and render/data split reuse phone freshness, cover and lyric context without secrets', async t => {
+  const { url, authority, tick, song } = await fixture(t);
+  const client = await connect(t, url);
+  const { PLAYER_URI, PLAYER_MIME } = require('../mcp');
+  const tools = (await client.listTools()).tools;
+  assert.equal(tools.find(x => x.name === 'music_open_player')._meta.ui.resourceUri, PLAYER_URI);
+  assert.equal(tools.find(x => x.name === 'music_now_playing')._meta.ui.resourceUri, undefined);
+  for (const name of ['music_player_state', 'music_player_control']) assert.deepEqual(tools.find(x => x.name === name)._meta.ui.visibility, ['app']);
+  assert.equal((await client.listResources()).resources.find(x => x.uri === PLAYER_URI).mimeType, PLAYER_MIME);
+  const resource = (await client.readResource({ uri: PLAYER_URI })).contents[0];
+  assert.equal(resource.mimeType, 'text/html;profile=mcp-app');
+  assert.deepEqual(resource._meta.ui.csp.connectDomains, []);
+  assert.ok(resource._meta.ui.csp.resourceDomains.every(x => /^https:\/\/p\d+\.music\.126\.net$/.test(x)));
+  assert.match(resource.text, /ui\/initialize/);
+  assert.doesNotMatch(resource.text, /<audio|<iframe|fetch\(|test-web-token-placeholder|test-mcp-token-placeholder|TEST_ONLY_NEVER_REAL_COOKIE/);
+  assert.equal((await call(client, 'open_player')).fresh, false);
+  authority.queue.append({ by: 'you', song: { ...song('123'), coverUrl: 'https://p1.music.126.net/test.jpg' } });
+  authority.reportNowPlaying({ songId:'123', title:'Phone song', artist:'Artist', playing:true, positionMs:10500, durationMs:180000 });
+  const snapshot = await call(client, 'player_state');
+  assert.equal(snapshot.current.coverUrl, 'https://p1.music.126.net/test.jpg');
+  assert.equal(snapshot.current.title, 'Phone song');
+  assert.equal(snapshot.lyricContext.current.index, 1);
+  assert.equal(snapshot.state, 'playing');
+  tick(61001);
+  const stale = await call(client, 'player_state');
+  assert.equal(stale.current, null); assert.equal(stale.lyricContext, null); assert.equal(stale.state, 'unknown');
+  assert.equal(stale.prepared.songId, '123');
+  assert.doesNotMatch(JSON.stringify([resource, snapshot, stale]), /TEST_ONLY_NEVER_REAL_COOKIE|netease-auth\.json|test-mcp-token-placeholder|"cookie"/);
+});
+
+test('player controls require a fresh matching phone song and remain idempotent across MCP transports', async t => {
+  const { url, authority, tick } = await fixture(t);
+  const a = await connect(t, url), b = await connect(t, url);
+  const args = { action:'pause', expectedSongId:'123', requestId:'widget-control-pause-123' };
+  assert.equal((await call(a, 'player_control', args)).error, 'PLAYER_STALE');
+  authority.reportNowPlaying({ songId:'123', playing:true });
+  const [first, retry] = await Promise.all([call(a, 'player_control', args), call(b, 'player_control', args)]);
+  assert.deepEqual(first, retry);
+  assert.equal(first.playback.status, 'pending');
+  assert.equal(authority.playbackSync().command.action, 'pause');
+  assert.equal(authority.playbackSync().command.songId, '123');
+  assert.equal((await call(a, 'player_control', { ...args, action:'next' })).error, 'REQUEST_ID_CONFLICT');
+  assert.equal((await call(a, 'player_control', { ...args, expectedSongId:'999', requestId:'widget-other-song' })).error, 'PLAYER_STALE');
+  tick(15001); assert.equal(authority.playbackSync().command, null);
+  assert.deepEqual(await call(b, 'player_control', args), first); // No duplicate command on retries.
+  tick(61001);
+  assert.equal((await call(a, 'player_control', { ...args, requestId:'widget-stale-pause' })).error, 'PLAYER_STALE');
+  const invalid = await a.callTool({ name:'music_player_control', arguments:{ ...args, action:'clear' } });
+  assert.equal(invalid.isError, true);
+});
+
+test('player presentation rejects untrusted covers and does not revive a heartbeat during metadata fetch', async () => {
+  const { safeCover, createPlayerView } = require('../music/player-view');
+  for (const url of ['javascript:alert(1)', 'data:image/svg+xml,test', 'http://p1.music.126.net/test', 'https://p1.music.126.net.evil.test/test', 'https://owner:secret@p1.music.126.net/test']) assert.equal(safeCover(url), '');
+  assert.equal(safeCover('https://p1.music.126.net/test.jpg'), 'https://p1.music.126.net/test.jpg');
+  let fresh = true;
+  const view = createPlayerView({
+    tool:{ handler:async () => fresh ? { listening:true, fresh:true, state:'playing', songId:'123', title:'Previous song', artist:'Artist', durationMs:1000, positionMs:100 } : {listening:false} },
+    authority:{ queue:{ get:() => ({items:[],currentId:null,mode:'seq'}) }, song:async () => { fresh=false; return {coverUrl:'https://p1.music.126.net/test.jpg'}; } }
+  });
+  const result = await view();
+  assert.equal(result.current, null); assert.equal(result.lyricContext, null); assert.equal(result.fresh, false);
+});
+
 test('ChatGPT OAuth discovery, owner consent, PKCE, resource binding, refresh and revocation', async t => {
   const publicUrl = 'https://music.example.test';
   const { url, dir, authority } = await fixture(t, { publicUrl });
@@ -163,7 +227,10 @@ test('ChatGPT OAuth discovery, owner consent, PKCE, resource binding, refresh an
   assert.equal((await post('/token', exchange)).status, 400);
   const transport = new StreamableHTTPClientTransport(new URL(url + '/mcp'), { requestInit: { headers: { Authorization: 'Bearer ' + tokens.access_token } } });
   const sdk = new Client({ name: 'oauth-test', version: '1' }); await sdk.connect(transport); t.after(() => sdk.close());
-  assert.equal((await sdk.listTools()).tools.length, 8);
+  assert.equal((await sdk.listTools()).tools.length, 11);
+  const oauthResource = await sdk.readResource({ uri: require('../mcp').PLAYER_URI });
+  assert.equal(oauthResource.contents[0].mimeType, 'text/html;profile=mcp-app');
+  assert.equal((await call(sdk, 'open_player')).kind, 'one-earbud-player');
   const refresh = { grant_type: 'refresh_token', client_id: client.client_id, resource, refresh_token: tokens.refresh_token };
   assert.equal((await post('/token', { ...refresh, resource: 'https://evil.example.test/mcp' })).status, 400);
   assert.equal((await post('/token', refresh)).status, 200);

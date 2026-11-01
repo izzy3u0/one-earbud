@@ -2,6 +2,8 @@
 
 远程 MCP 使用独立 `MCP_AUTH_TOKEN`；`ONE_EARBUD_TOKEN` 继续用于手机 Web/API，两者不能相同。ChatGPT 通过官方 SDK OAuth 授权后使用独立 Bearer 令牌，不能取得网易云 cookie。登录和 OAuth 私密文件只存在 `ONE_EARBUD_DATA_DIR`。公网部署必须配置网页口令，MCP 未配置口令时关闭。完整步骤见 [MCP.md](MCP.md)。
 
+ChatGPT 内嵌卡片的资源读取和控件调用继续使用同一 OAuth/Bearer 保护；卡片本身不取得两个环境变量口令或网易云 cookie。`app` 工具可见性不代替服务端鉴权。新增用户按钮只允许暂停、恢复及前后切歌，并校验新鲜歌曲预期值、短期指令和幂等键；不授予清空、删除、挪动、登录或导入权限。CSP/消息来源/图片 URL 校验和降级说明见 [MCP-UI.md](MCP-UI.md)。
+
 ## 登录信息存在哪
 
 - 网易云登录态：服务器 `ONE_EARBUD_DATA_DIR/netease-auth.json`，文件权限 0600，原子写入。

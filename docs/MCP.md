@@ -111,7 +111,9 @@ Authorization: Bearer <MCP_AUTH_TOKEN 的实际值>
 
 `requestId` 为 8–80 字符。同一次写操作的网络重试必须复用同一个值；不同操作用新值。现有工具保留进程内最近 50 个写操作结果，也合并并发重试。**重启服务或结果被淘汰后不保证去重**，不要长期重放旧请求。
 
-`music_lyrics` 返回完整结构化歌词（行号和翻译）；`music_share` 可传最多 8 个 `lineIndexes`，返回原有 `delivery/card` 及歌曲数据。当前没有为 ChatGPT 实现原宿主的卡片 UI，所以返回 `rendered:false` 和 `deliveryStatus:card_data_only`，不代表手机收到或渲染了分享卡片。
+`music_lyrics` 返回完整结构化歌词（行号和翻译）；`music_share` 可传最多 8 个 `lineIndexes`，返回原有 `delivery/card` 及歌曲数据。原宿主的分享卡片仍返回 `rendered:false` 和 `deliveryStatus:card_data_only`，不代表手机收到或渲染了分享卡片。
+
+**ChatGPT 新增内嵌音乐 UI**：调用 `music_open_player` 打开 Ash × Izzy 迷你遥控卡，显示封面、实况进度和附近歌词，提供播放/暂停与前后切歌。它与外部 PWA 共用后端，声音仍在 PWA。部署后需在 ChatGPT 刷新 MCP 连接，并刷新手机 PWA；详细触发方式、控件和平台限制见 [MCP-UI.md](MCP-UI.md)。
 
 ## 5. iPhone 和同步的边界
 

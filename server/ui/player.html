@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ash × Izzy · 分你一只耳机</title>
+  <style>
+    :root{color-scheme:light dark;--paper:#f8f6f1;--ink:#203d39;--muted:#6c7872;--line:#dce2d9;--accent:#296d60;--soft:#e7eee6;--white:#fffdf9}
+    *{box-sizing:border-box}body{margin:0;background:transparent;color:var(--ink);font:14px/1.5 system-ui,-apple-system,"PingFang SC",sans-serif}
+    .card{max-width:480px;margin:auto;padding:18px 18px 14px;background:var(--paper);border:1px solid var(--line);border-radius:20px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:17px}.brand{font-size:11px;letter-spacing:.08em;font-weight:650}.brand span{display:block;letter-spacing:.03em;font-size:10px;font-weight:400;color:var(--muted)}
+    button{font:inherit;color:inherit;cursor:pointer;touch-action:manipulation;min-width:44px;min-height:44px;border:0;background:transparent;border-radius:50%}button:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible{outline:3px solid var(--accent);outline-offset:3px}button:hover:enabled{background:var(--soft)}
+    .refresh{font-size:12px;border-radius:12px;padding:0 10px;color:var(--accent)}.track{display:grid;grid-template-columns:78px minmax(0,1fr);gap:15px;align-items:center}.cover{width:78px;height:78px;border-radius:13px;background:var(--soft);position:relative;overflow:hidden;display:grid;place-items:center}.cover svg{width:38px;height:38px;opacity:.5}.cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+    h1{font-size:18px;line-height:1.35;letter-spacing:-.03em;margin:0 0 5px;overflow-wrap:anywhere}.artist{color:var(--muted);font-size:12px;margin:0;overflow-wrap:anywhere}.status{font-size:10px;display:inline-flex;align-items:center;gap:5px;margin-top:8px;color:var(--accent)}.dot{height:5px;width:5px;border-radius:50%;background:currentColor}
+    .lyrics{height:92px;display:flex;flex-direction:column;justify-content:center;gap:3px;margin:16px 0 10px;text-align:center}.lyric{margin:0;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lyric.current{font-size:14px;font-weight:550;color:var(--ink)}.translation{font-size:10px;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    progress{display:block;width:100%;height:4px;appearance:none;border:0;border-radius:4px;background:var(--line);accent-color:var(--accent)}progress::-webkit-progress-bar{background:var(--line);border-radius:4px}progress::-webkit-progress-value{background:var(--accent);border-radius:4px}progress::-moz-progress-bar{background:var(--accent);border-radius:4px}.times{display:flex;justify-content:space-between;margin-top:6px;color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+    .controls{display:flex;align-items:center;justify-content:center;gap:22px;margin:7px 0 12px}.controls svg{width:20px;height:20px;vertical-align:middle;fill:currentColor}.controls .toggle{width:52px;height:52px;color:var(--white);background:var(--accent)}.controls .toggle:hover:enabled{background:var(--ink)}
+    .footer{border-top:1px solid var(--line);padding-top:10px;font-size:10px;color:var(--muted)}.footer-row{display:flex;justify-content:space-between;gap:10px;align-items:center}.auto{display:flex;gap:5px;align-items:center;min-height:30px}.auto input{accent-color:var(--accent);margin:0}.notice{margin:3px 0 0;min-height:30px;overflow-wrap:anywhere}.sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+    [hidden]{display:none!important}@media(prefers-color-scheme:dark){:root{--paper:#202925;--ink:#e2e9df;--muted:#a0b0a4;--line:#3b4940;--accent:#9ccdb7;--soft:#303f36;--white:#16241d}}html[data-theme="light"]{color-scheme:light;--paper:#f8f6f1;--ink:#203d39;--muted:#6c7872;--line:#dce2d9;--accent:#296d60;--soft:#e7eee6;--white:#fffdf9}html[data-theme="dark"]{color-scheme:dark;--paper:#202925;--ink:#e2e9df;--muted:#a0b0a4;--line:#3b4940;--accent:#9ccdb7;--soft:#303f36;--white:#16241d}
+    @media(max-width:340px){.card{padding:14px}.track{grid-template-columns:64px minmax(0,1fr);gap:12px}.cover{width:64px;height:64px}h1{font-size:16px}.brand{font-size:10px}.controls{gap:16px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+  </style>
+</head>
+<body>
+  <main class="card" aria-label="Ash × Izzy 音乐播放器">
+    <header><div class="brand">Ash × Izzy<span>分你一只耳机 · 声音来自 PWA</span></div><button id="refresh" class="refresh" type="button" aria-label="刷新手机播放状态" disabled>刷新 ↻</button></header>
+    <section class="track" aria-label="歌曲信息">
+      <div class="cover"><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><circle cx="20" cy="20" r="16"/><circle cx="20" cy="20" r="5"/><path d="M9 20a11 11 0 0 1 11-11"/></svg><img id="cover" alt="专辑封面" referrerpolicy="no-referrer" hidden></div>
+      <div><h1 id="title">分你一只耳机</h1><p id="artist" class="artist">正在连接手机播放器…</p><div class="status"><span class="dot" aria-hidden="true"></span><span id="status">等待实况</span></div></div>
+    </section>
+    <section class="lyrics" aria-label="附近歌词"><p id="previous-line" class="lyric"></p><p id="current-line" class="lyric current">让音乐陪我们待一会儿</p><p id="translation" class="lyric translation"></p><p id="next-line" class="lyric"></p></section>
+    <progress id="progress" max="100" value="0" aria-label="手机回报的播放进度"></progress><div class="times"><span id="position">—:—</span><span id="duration">—:—</span></div>
+    <nav class="controls" aria-label="手机播放控件">
+      <button id="previous" type="button" aria-label="上一首（队列顺序）" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h2v14H5zm14 0v14L8 12z"/></svg></button>
+      <button id="toggle" class="toggle" type="button" aria-label="播放" disabled><span id="play-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 4 12 8-12 8z"/></svg></span><span id="pause-icon" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg></span></button>
+      <button id="next" type="button" aria-label="下一首" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5h2v14h-2zM5 5l11 7-11 7z"/></svg></button>
+    </nav>
+    <footer class="footer"><div class="footer-row"><span id="updated">尚未刷新</span><label class="auto"><input id="auto" type="checkbox" checked>自动刷新</label></div><p id="notice" class="notice" role="status" aria-live="polite">首次播放请先在手机 PWA 点播放。卡片不会另开一份音频。</p></footer>
+  </main>
+  <script>
+  (() => {
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const elements = ['refresh','cover','title','artist','status','previous-line','current-line','translation','next-line','progress','position','duration','previous','toggle','next','play-icon','pause-icon','updated','auto','notice'];
+    const el = Object.fromEntries(elements.map(id => [id, $(id)]));
+    let view = null, receivedAt = 0, busy = false, reading = false, connected = false, stopped = false, onscreen = true;
+    let mode = 'standard', rpcId = 0, hostOrigin = '*', lastPoll = 0, activeUntil = Date.now() + 300000;
+    let failedControl = null;
+    const pending = new Map();
+    const timers = [];
+    function notify(method, params) { window.parent.postMessage({ jsonrpc:'2.0', method, params }, hostOrigin); }
+    function request(method, params) {
+      return new Promise((resolve, reject) => {
+        const id = ++rpcId;
+        const timer = setTimeout(() => { pending.delete(id); reject(new Error('bridge_timeout')); }, method === 'ui/initialize' ? 6000 : 30000);
+        pending.set(id, { resolve, reject, timer });
+        window.parent.postMessage({ jsonrpc:'2.0', id, method, params }, hostOrigin);
+      });
+    }
+    function theme(context) {
+      if (context?.theme === 'light' || context?.theme === 'dark') document.documentElement.dataset.theme = context.theme;
+    }
+    function accept(result) {
+      const data = result?.structuredContent;
+      if (data?.kind !== 'one-earbud-player' || data.ok !== true || !Number.isFinite(data.sampledAt)) return;
+      if (view && data.sampledAt < view.sampledAt) return;
+      view = data; receivedAt = Date.now(); render();
+    }
+    function receive(event) {
+      if (event.source !== window.parent) return;
+      const message = event.data;
+      if (!message || message.jsonrpc !== '2.0') return;
+      if (pending.has(message.id) && !message.method) {
+        const waiter = pending.get(message.id); pending.delete(message.id); clearTimeout(waiter.timer);
+        if (message.error) waiter.reject(new Error('bridge_error'));
+        else {
+          if (hostOrigin === '*' && event.origin && event.origin !== 'null') hostOrigin = event.origin;
+          waiter.resolve(message.result);
+        }
+      } else if (message.method === 'ui/notifications/tool-result') accept(message.params);
+      else if (message.method === 'ui/notifications/host-context-changed') theme(message.params);
+      else if (message.method === 'ui/resource-teardown') {
+        window.parent.postMessage({ jsonrpc:'2.0', id:message.id, result:{} }, hostOrigin);
+        cleanup();
+      }
+    }
+    window.addEventListener('message', receive);
+    async function connect() {
+      if (window.parent === window) throw new Error('no_host');
+      try {
+        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'1.0.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
+        theme(result?.hostContext);
+        notify('ui/notifications/initialized', {});
+      } catch (error) {
+        if (typeof window.openai?.callTool !== 'function') throw error;
+        mode = 'compatibility';
+        accept({ structuredContent:window.openai.toolOutput });
+      }
+      connected = true; render(); sizeChanged();
+    }
+    const bridgeReady = connect();
+    async function callTool(name, args) {
+      await bridgeReady;
+      const result = mode === 'standard' ? await request('tools/call', { name, arguments:args }) : await window.openai.callTool(name, args);
+      if (result?.isError || result?.structuredContent?.ok === false) throw new Error(result?.structuredContent?.message || '操作未完成，请刷新后重试。');
+      return result;
+    }
+    function safeCover(value) {
+      try { const u = new URL(value); return !u.username && !u.password && /^https:\/\/p(?:[1-9]|10)\.music\.126\.net$/.test(u.origin) ? u.href : ''; } catch (_) { return ''; }
+    }
+    function fmt(ms) { const s = Math.floor(Math.max(0, Number(ms) || 0) / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+    function fresh() { return !!(view?.fresh && view.current && Date.now() - receivedAt < 15000); }
+    function render() {
+      const current = fresh(), song = current ? view.current : view?.prepared;
+      el.title.textContent = song?.title || (view ? '此刻没有手机实况' : '分你一只耳机');
+      el.artist.textContent = song?.artist || (view ? '打开 PWA，让这只耳机重新连上' : '正在连接手机播放器…');
+      el.status.textContent = current ? (view.state === 'playing' ? '手机正在播放' : '手机已暂停') : song ? '队列中待播放 · 非实况' : '手机状态未更新';
+      const cover = safeCover(song?.coverUrl);
+      if (cover && el.cover.getAttribute('src') !== cover) { el.cover.src = cover; el.cover.hidden = false; }
+      if (!cover) { el.cover.removeAttribute('src'); el.cover.hidden = true; }
+      const context = current ? view.lyricContext : null;
+      el['previous-line'].textContent = context?.previous?.text || '';
+      el['current-line'].textContent = context?.current?.text || (current ? '前奏或暂无歌词' : '等手机回报新的播放状态');
+      el.translation.textContent = context?.current?.trans || '';
+      el['next-line'].textContent = context?.next?.text || '';
+      const duration = current ? Number(song?.durationMs) || 0 : 0;
+      const position = current ? Math.min(duration || Infinity, Math.max(0, view.positionMs || 0)) : 0;
+      el.progress.value = duration > 0 ? 100 * position / duration : 0;
+      el.position.textContent = current ? fmt(position) : '—:—';
+      el.duration.textContent = current ? fmt(duration) : '—:—';
+      el.toggle.disabled = !connected || !current || busy;
+      el.previous.disabled = el.next.disabled = !connected || !current || busy || !view?.queue?.count;
+      el.refresh.disabled = !connected || reading;
+      const playing = current && view.state === 'playing';
+      el['play-icon'].hidden = playing; el['pause-icon'].hidden = !playing;
+      el.toggle.setAttribute('aria-label', playing ? '暂停手机播放' : '继续手机播放');
+      el.updated.textContent = view ? '状态更新于 ' + Math.max(0, Math.floor((Date.now() - receivedAt) / 1000)) + ' 秒前' : '尚未刷新';
+    }
+    async function refresh(manual = false) {
+      if (stopped || reading || !connected) return;
+      if (manual) { activeUntil = Date.now() + 300000; el.notice.textContent = '正在读取手机实况…'; }
+      reading = true; lastPoll = Date.now(); render();
+      try { accept(await callTool('music_player_state', {})); if (manual) el.notice.textContent = '状态来自手机心跳；首次播放或媒体受限时请在 PWA 点播放。'; }
+      catch (_) { el.notice.textContent = '刷新未完成。免费服务可能正在唤醒；稍后点刷新，或重新连接应用。'; }
+      finally { reading = false; render(); }
+    }
+    async function control(action) {
+      if (!fresh() || busy || !connected) return;
+      const expectedSongId = view.current.songId;
+      const args = failedControl?.action === action && failedControl?.expectedSongId === expectedSongId ? failedControl : { action, expectedSongId, requestId:window.crypto?.randomUUID?.() || 'ui-' + Date.now() + '-' + Math.random().toString(36).slice(2) };
+      failedControl = args; busy = true; activeUntil = Date.now() + 300000; render();
+      el.notice.textContent = '正在发送指令…';
+      try {
+        const result = await callTool('music_player_control', args);
+        failedControl = null;
+        el.notice.textContent = result.structuredContent?.message || '指令已发送，等待手机回报。';
+      } catch (error) { el.notice.textContent = error.message === 'bridge_timeout' || error.message === 'bridge_error' ? '指令尚未确认。点同一按钮会复用请求标识；请先检查手机。' : error.message; }
+      finally { busy = false; render(); await refresh(); }
+    }
+    el.refresh.addEventListener('click', () => refresh(true));
+    el.toggle.addEventListener('click', () => control(view?.state === 'playing' ? 'pause' : 'resume'));
+    el.previous.addEventListener('click', () => control('previous'));
+    el.next.addEventListener('click', () => control('next'));
+    el.cover.addEventListener('error', () => { el.cover.hidden = true; });
+    el.auto.addEventListener('change', () => { if (el.auto.checked) refresh(true); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && el.auto.checked) refresh(); });
+    let lastHeight = 0, lastWidth = 0;
+    function sizeChanged() {
+      if (!connected || stopped || typeof document.body?.getBoundingClientRect !== 'function') return;
+      const rect = document.body.getBoundingClientRect(), height = Math.ceil(rect.height), width = Math.ceil(rect.width);
+      if (height === lastHeight && width === lastWidth) return;
+      lastHeight = height; lastWidth = width;
+      if (mode === 'standard') notify('ui/notifications/size-changed', { height, width });
+      else window.openai?.notifyIntrinsicHeight?.();
+    }
+    const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(sizeChanged) : null;
+    resizeObserver?.observe(document.body);
+    const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
+      onscreen = entries.some(entry => entry.isIntersecting);
+      if (onscreen && !document.hidden && el.auto.checked) refresh();
+    }) : null;
+    observer?.observe(document.body);
+    window.addEventListener('openai:set_globals', event => { if (mode === 'compatibility') accept({ structuredContent:event.detail?.globals?.toolOutput || window.openai?.toolOutput }); });
+    function cleanup() {
+      stopped = true; connected = false; timers.forEach(clearInterval); observer?.disconnect(); resizeObserver?.disconnect();
+      pending.forEach(waiter => { clearTimeout(waiter.timer); waiter.reject(new Error('closed')); }); pending.clear();
+      window.removeEventListener('message', receive); render();
+    }
+    window.addEventListener('pagehide', cleanup, { once:true });
+    timers.push(setInterval(() => {
+      if (stopped || document.hidden || !onscreen) return;
+      render();
+      if (Date.now() > activeUntil) {
+        if (el.auto.checked) { el.auto.checked = false; el.notice.textContent = '自动刷新已暂停。点刷新即可继续。'; }
+      } else if (el.auto.checked && Date.now() - lastPoll >= 5000) refresh();
+    }, 1000));
+    bridgeReady.then(() => refresh()).catch(() => { el.notice.textContent = '此宿主尚未提供交互桥接。可查看工具文字结果，继续使用原网页/PWA。'; render(); });
+  })();
+  </script>
+</body>
+</html>

@@ -9,8 +9,13 @@ function createPlaybackSync({ now = Date.now } = {}) {
       command = { id: randomUUID(), itemId, at: now(), expiresAt: now() + COMMAND_TTL_MS };
       return { ...command, status: 'pending' };
     },
+    publishControl(action, songId) {
+      if (!['pause', 'resume', 'previous', 'next'].includes(action)) throw new Error('player_control_invalid');
+      command = { id: randomUUID(), action, songId, at: now(), expiresAt: now() + 15000 };
+      return { ...command, status: 'pending' };
+    },
     current(queue) {
-      if (!command || now() > command.expiresAt || queue.currentId !== command.itemId) return null;
+      if (!command || now() > command.expiresAt || (!command.action && queue.currentId !== command.itemId)) return null;
       return { ...command };
     }
   };

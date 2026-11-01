@@ -23,6 +23,18 @@ test('ChatGPT MCP -> real HTTP authority -> phone player: queue sync, active swi
   const client = new Client({ name: 'phone-e2e-test', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(base + '/mcp'), { requestInit: { headers: { Authorization: 'Bearer test-mcp-token' } } }));
   const send = async (action, id) => (await client.callTool({ name: 'music_' + action, arguments: { songId: id, requestId: 'phone-test-' + action + '-' + id, note: 'for the phone' } })).structuredContent;
+  let controlId = 0;
+  const control = async action => (await client.callTool({ name:'music_player_control', arguments:{ action, expectedSongId:player.getState().song.songId, requestId:'phone-ui-control-' + (++controlId) } })).structuredContent;
+  const syncReport = async () => {
+    // Wait for the actual authenticated heartbeat POST, rather than assuming an RPC means playback.
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const reported = (await client.callTool({ name:'music_now_playing', arguments:{} })).structuredContent;
+      const phone = player.getState();
+      if (reported.songId === phone.song.songId && reported.state === (phone.playing && !phone.buffering ? 'playing' : 'paused')) return;
+      await new Promise(resolve => oldTimeout(resolve, 10));
+    }
+    assert.fail('Phone heartbeat was not received');
+  };
   let audio;
   class FakeAudio extends EventTarget {
     constructor() { super(); this.attrs = {}; this.currentTime = 0; this.duration = 100; this.paused = true; this.style = {}; this.playCalls = 0; }
@@ -53,10 +65,28 @@ test('ChatGPT MCP -> real HTTP authority -> phone player: queue sync, active swi
   await send('play_now', '1'); await player.syncPlayback();
   assert.equal(player.getState().song.songId, '1'); assert.equal(audio.playCalls, 0); assert.equal(player.getState().playing, false);
   assert.equal(audio.src, 'https://audio.example.test/1');
+  await syncReport();
+  const idleCalls = audio.playCalls;
+  assert.equal((await control('resume')).playback.status, 'pending');
+  await player.syncPlayback();
+  assert.equal(audio.playCalls, idleCalls); // The iframe gesture cannot unlock the phone's audio.
   player.toggle(); // Actual user gesture after the source is prepared.
+  assert.equal(player.getState().playing, true);
+  await syncReport();
+  await control('pause'); await player.syncPlayback(); await syncReport();
+  assert.equal(player.getState().playing, false);
+  assert.equal((await client.callTool({ name:'music_now_playing', arguments:{} })).structuredContent.state, 'paused');
+  await control('resume'); await player.syncPlayback(); await syncReport();
   assert.equal(player.getState().playing, true);
   await send('play_next', '2'); await send('queue_add', '3'); await player.syncPlayback();
   assert.deepEqual(player.getQueue().items.map(x => x.songId), ['1', '2', '3']);
+  assert.equal(player.getState().song.songId, '1');
+  await control('next'); await player.syncPlayback(); await syncReport();
+  assert.equal(player.getState().song.songId, '2');
+  const skippedCalls = audio.playCalls;
+  await player.syncPlayback(); assert.equal(audio.playCalls, skippedCalls); // A held control command executes only once.
+  assert.ok(JSON.parse(localStorage.getItem('one-earbud.controls.done')).includes(authority.playbackSync().command.id));
+  await control('previous'); await player.syncPlayback(); await syncReport();
   assert.equal(player.getState().song.songId, '1');
   const play = await send('play_now', '4'); assert.equal(play.playback.status, 'pending');
   await player.syncPlayback();
@@ -67,6 +97,15 @@ test('ChatGPT MCP -> real HTTP authority -> phone player: queue sync, active swi
   assert.equal(audio.playCalls, calls); // Polling and a legacy chat card must not double-trigger.
   await player.next(); assert.equal(player.getState().song.songId, '2'); // Original queued successor remains.
   player.toggle(); assert.equal(player.getState().playing, false);
+  await syncReport();
+  const beforePausedSkip = audio.playCalls;
+  await control('previous'); await player.syncPlayback(); await syncReport();
+  assert.equal(player.getState().song.songId, '4'); // Already visited items may be prepared again.
+  assert.equal(audio.playCalls, beforePausedSkip);
+  assert.equal(player.getState().playing, false);
+  await control('next'); await player.syncPlayback(); await syncReport();
+  assert.equal(player.getState().song.songId, '2');
+  assert.equal(audio.playCalls, beforePausedSkip);
   const pausedCalls = audio.playCalls;
   await send('play_now', '6'); await player.syncPlayback();
   assert.equal(player.getState().song.songId, '6'); assert.equal(audio.playCalls, pausedCalls);

@@ -18,6 +18,7 @@ const state = {
 };
 const listeners = new Set();
 let audio = null;
+let hasPlaybackSession = false; // Set only after the phone actually emitted `playing`.
 let heartbeat = 0;
 let urlFetchedAt = 0;
 // 下一首提前备好：快放完时先把下一首的详情和地址要回来，
@@ -82,7 +83,7 @@ function ensureAudio() {
   document.body.appendChild(audio);
   audio.addEventListener('play', () => { state.playing = true; state.buffering = true; state.error = ''; skipRun = 0; report(); emit(); fillDetail(); });
   // 真出声了才算在放，这时候才撤加载中、才跟服务器说在听
-  audio.addEventListener('playing', () => { if (state.buffering) { state.buffering = false; report(); emit(); } });
+  audio.addEventListener('playing', () => { hasPlaybackSession = true; if (state.buffering) { state.buffering = false; report(); emit(); } });
   audio.addEventListener('waiting', () => { if (!audio.paused && !state.buffering) { state.buffering = true; report(); emit(); } });
   audio.addEventListener('pause', () => { state.playing = false; state.buffering = false; report(); emit(); });
   audio.addEventListener('ended', () => {
@@ -348,6 +349,17 @@ export async function next(opts) {
   else target = items[(at + 1) % items.length];
   if (target) await playQueueItem(target.id);
 }
+export async function previous() {
+  await refreshQueue();
+  const item = pickPrevious();
+  if (item) await playQueueItem(item.id);
+}
+function pickPrevious() {
+  const items = queue.items;
+  if (!items.length) return null;
+  const at = items.findIndex(x => x.id === (state.queueItemId || queue.currentId));
+  return items[(at - 1 + items.length) % items.length];
+}
 export async function setMode(mode) { return queueOp('/mode', { mode }); }
 // 从卡片、搜歌里点开的一首：插进播放列表当前位置、成为当前这首，放完接着放列表。
 // 服务器没接住（断网之类）就退回老样子：单放这一首，不进列表。
@@ -381,7 +393,11 @@ export async function playFromTa(itemId) {
   emitQueue({ taAdded: item, taPlayed: true });
   startQueuePoll();
   if (wasPlaying) { await play(item, 0); return; }
+  await prepareQueueItem(item);
+}
+async function prepareQueueItem(item) {
   // No audio.play() here: never attempt to bypass Safari's user-gesture requirement.
+  state.queueItemId = item.id;
   if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
   wantPlay = false;
   state.song = { songId: item.songId, title: item.title, artist: item.artist, coverUrl: item.coverUrl, durationMs: item.durationMs };
@@ -396,6 +412,35 @@ export async function playFromTa(itemId) {
 // One small authenticated poll serves both queue updates and remote play_now.
 // Start even when paused/empty so an open PWA can prepare its first remote song.
 let syncInFlight = null;
+const handledControls = new Set();
+async function applyPlayerControl(command) {
+  if (handledControls.has(command.id)) return;
+  const ledgerKey = 'one-earbud.controls.done';
+  let done = [];
+  try { const saved = JSON.parse(localStorage.getItem(ledgerKey) || '[]'); if (Array.isArray(saved)) done = saved; } catch (_) {}
+  if (done.includes(command.id)) return;
+  handledControls.add(command.id);
+  if (handledControls.size > 100) handledControls.delete(handledControls.values().next().value);
+  try { localStorage.setItem(ledgerKey, JSON.stringify([...done.slice(-99), command.id])); } catch (_) {}
+  // A stale card must never pause/skip a newer song on the phone.
+  if (!state.song || state.closed || state.song.songId !== command.songId) return;
+  if (command.action === 'pause') {
+    wantPlay = false;
+    if (audio) audio.pause();
+  } else if (command.action === 'resume') {
+    if (!hasPlaybackSession) { state.error = '请先在手机播放器点播放'; emit(); report(); return; }
+    if (audio && audio.paused) toggle();
+  } else if (command.action === 'next' || command.action === 'previous') {
+    const active = !!(audio && !audio.paused && state.playing);
+    if (active) await (command.action === 'next' ? next() : previous());
+    else {
+      // Same preparation path as play_now: a remote click is not a phone gesture.
+      const item = command.action === 'next' ? pickNext() : pickPrevious();
+      if (item) { await queueOp('/current', { id: item.id }); await prepareQueueItem(item); }
+    }
+  }
+  report();
+}
 export function syncPlayback() {
   if (syncInFlight) return syncInFlight;
   syncInFlight = (async () => {
@@ -403,7 +448,10 @@ export function syncPlayback() {
       const result = await apiRequest(API_BASE + '/playback-sync');
       takeQueue(result);
       const command = result && result.command;
-      if (command && command.expiresAt > Date.now() && command.itemId === queue.currentId) await playFromTa(command.itemId);
+      if (command && command.expiresAt > Date.now()) {
+        if (command.action) await applyPlayerControl(command);
+        else if (command.itemId === queue.currentId) await playFromTa(command.itemId);
+      }
     } catch (_) { /* Offline/auth failures retry when the page is online again. */ }
   })().finally(() => { syncInFlight = null; });
   return syncInFlight;

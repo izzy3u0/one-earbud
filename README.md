@@ -16,6 +16,8 @@
 
 **ChatGPT + 独立手机播放器 / PWA + Render 部署：请先看 [docs/MCP.md](docs/MCP.md)。** 本分支保留原组件接入方式，并提供可直接打开的 `/` 听歌首页，以及带独立鉴权的远程 `/mcp`。使用 Node 22+。
 
+**ChatGPT 对话内音乐卡片：见 [docs/MCP-UI.md](docs/MCP-UI.md)。** `music_open_player` 打开 Ash × Izzy 小卡片，显示实况并遥控现有 PWA；声音继续来自 PWA。
+
 ```bash
 git clone https://github.com/izzy3u0/one-earbud.git && cd one-earbud
 npm install
@@ -38,7 +40,8 @@ npm start                   # 默认 http://localhost:8787
 | [docs/CUSTOMIZE.md](docs/CUSTOMIZE.md) | 人 | 名字、颜色、图标、文案，哪些能换、在哪换 |
 | [docs/PITFALLS.md](docs/PITFALLS.md) | 人和机 | 真实踩过的坑，尤其是 iPhone 上的 |
 | [docs/SECURITY.md](docs/SECURITY.md) | 人 | 登录信息存在哪、什么绝不能提交、免责 |
-| [docs/MCP.md](docs/MCP.md) | 人和机 | ChatGPT、远程 MCP、手机切歌、Render 部署和持久化磁盘 |
+| [docs/MCP.md](docs/MCP.md) | 人和机 | ChatGPT、远程 MCP、手机切歌、Render Free 部署和临时数据 |
+| [docs/MCP-UI.md](docs/MCP-UI.md) | 人和机 | ChatGPT 内嵌音乐卡片、刷新连接、手机控件与平台限制 |
 
 ## 测试
 

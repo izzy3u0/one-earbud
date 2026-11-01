@@ -52,6 +52,7 @@ function createMusicAuthority(options) {
     // 播放列表：YOU和TA共用的一份。规矩在 queue.js 里（TA只能往后加）。
     queue,
     requestPlayback(itemId) { return playback.publish(itemId); },
+    requestPlayerControl(action, songId) { return playback.publishControl(action, songId); },
     playbackSync() { const q = queue.get(); return { queue: q, command: playback.current(q) }; },
     // 导入：YOU的歌单。账号 id 早先存成了空的，缺就现拿一次，放内存里。
     async playlists() {
