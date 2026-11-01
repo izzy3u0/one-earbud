@@ -5,6 +5,8 @@
 
 const crypto = require('crypto');
 const https = require('https');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const cookiePersistence = new AsyncLocalStorage();
 const { makeQrDataUri } = require('./qr');
 
 const BASE = 'https://music.163.com';
@@ -75,6 +77,7 @@ function csrfOf(cookie) { return cookieMap(cookie).get('__csrf') || ''; }
 // ---------- HTTP ----------
 function request(path, opts) {
   opts = opts || {};
+  const onCookie = cookiePersistence.getStore();
   return new Promise((resolve, reject) => {
     const url = new URL(BASE + path);
     const headers = { 'User-Agent': UA, Accept: 'application/json,text/plain,*/*', Referer: BASE + '/', Origin: BASE };
@@ -98,6 +101,11 @@ function request(path, opts) {
     req.on('error', err => reject(err instanceof MusicError ? err : new MusicError('网易云连接失败', 'MUSIC_UPSTREAM_ERROR', 502)));
     if (body) req.write(body);
     req.end();
+  }).then(async result => {
+    // Persist Set-Cookie before data shaping discards it (arrays, lyrics, playlist details).
+    // The callback is per authority/request, never a shared global account.
+    if (onCookie && opts.cookie && result.cookie !== opts.cookie) await onCookie(result.cookie, opts.cookie);
+    return result;
   });
 }
 function weapi(path, payload, cookie) {
@@ -261,4 +269,8 @@ async function playUrl(cookie, songId) {
   return { songId: id, url, trial: !!item.freeTrialInfo, cookie: next };
 }
 
-module.exports = { MusicError, createQr, checkQr, account, search, songDetail, userPlaylists, playlistSongs, playlistCard, dailySongs, lyrics, playUrl, mergeLyrics, parseLrc, mergeCookie };
+const methods = { createQr, checkQr, account, search, songDetail, userPlaylists, playlistSongs, playlistCard, dailySongs, lyrics, playUrl };
+function createClient({ onCookie }) {
+  return Object.fromEntries(Object.entries(methods).map(([name, fn]) => [name, (...args) => cookiePersistence.run(onCookie, () => fn(...args))]));
+}
+module.exports = { MusicError, ...methods, createClient, mergeLyrics, parseLrc, mergeCookie };

@@ -16,7 +16,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: ONE_EARBUD_DATA_DIR
-        # Ephemeral: login, queue and OAuth state can be lost on restart/redeploy.
+        # Ephemeral queue/OAuth; configure external NetEase auth storage per docs/MCP.md.
         value: /tmp/one-earbud
       # Enter two different secrets in Render during initial Blueprint creation.
       - key: ONE_EARBUD_TOKEN

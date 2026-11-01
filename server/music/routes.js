@@ -22,7 +22,10 @@ function mountMusicRoutes(router, authority) {
     nostore(res); if (!guard(res)) return;
     try { res.json(Object.assign({ ok: true }, await authority.pollQr(String(req.params.key || '').slice(0, 120)))); } catch (e) { sendError(res, e, 'qr-poll'); }
   });
-  router.post('/music/logout', (req, res) => { nostore(res); if (!guard(res)) return; res.json(Object.assign({ ok: true }, authority.logout())); });
+  router.post('/music/logout', async (req, res) => {
+    nostore(res); if (!guard(res)) return;
+    try { res.json(Object.assign({ ok: true }, await authority.logout())); } catch (e) { sendError(res, e, 'logout'); }
+  });
   router.get('/music/search', async (req, res) => {
     nostore(res); if (!guard(res)) return;
     try { res.json({ ok: true, songs: await authority.search(String(req.query.q || ''), Number(req.query.limit) || 20) }); } catch (e) { sendError(res, e, 'search'); }

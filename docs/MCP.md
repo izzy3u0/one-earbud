@@ -20,9 +20,10 @@
 
 ### 免费版的数据和休眠限制
 
-**免费版没有持久化磁盘。** 数据目录是临时文件系统中的 `/tmp/one-earbud`。重新部署、实例重启、休眠或文件系统重置后，可能丢失：
+**免费版没有持久化磁盘。** 数据目录是临时文件系统中的 `/tmp/one-earbud`。本项目现在支持把**网易云登录态单独加密保存到外部 PostgreSQL**（推荐 Neon Free，设置方法见下节），启动时先恢复，再开放 Web/MCP。配置完成后，普通 Render 休眠、唤醒、重启和部署不再依赖临时文件保存网易云登录。
 
-- 网易云登录态 `netease-auth.json`：需要到 `/login.html` 重新扫码。
+如果没有配置外部登录态存储，仍可能在上述情况下丢失网易云登录，需要重新扫码。以下数据仍使用原实现，没有迁移到数据库：
+
 - 播放队列 `queue.json`：需要重新导入歌单或添加歌曲，不保证自动恢复。
 - OAuth 状态 `oauth-state.json`：已注册客户端和令牌状态可能失效，需要在 ChatGPT 重新连接/授权；若重连仍失败，删除原 MCP 连接后重新添加。
 
@@ -32,6 +33,24 @@ Render 保存的环境变量口令不会因为临时文件清空而自动更换�
 
 继续只运行 **一个实例**，不启用扩容或额外资源。播放器、扫码登录、MCP、OAuth、手机同步和健康检查仍由同一服务提供。
 
+### 免费保存网易云登录：Neon Free
+
+这一步不改变 Render Free 方案，也不添加 Render Disk。Neon Free 是外部 PostgreSQL，当前免费方案无需信用卡、没有试用到期日；注意其免费用量限制，详见 [Neon 方案](https://neon.com/pricing)。不要使用会在 30 天后到期的 Render Free Postgres 作为长期登录态存储。
+
+1. 打开 [Neon 控制台](https://console.neon.tech/)，登录后创建一个专用于 one-earbud 的 **Free** 项目；区域可选离 Render Singapore 较近的区域。不要升级付费，也不要复用其他项目的数据库。
+2. 项目内点 **Connect**，选择默认生产分支和数据库，复制 **Pooled connection string**，格式为 `postgresql://...`。它包含密码，不要发到聊天、截图或提交 GitHub。
+3. 打开 Render → 现有 `one-earbud` 服务 → **Environment → Add Environment Variable**，新增 `ONE_EARBUD_AUTH_DATABASE_URL`，值填这条连接串。
+4. 再新增 `ONE_EARBUD_AUTH_ENCRYPTION_KEY`，使用 Render 的 **Generate** 生成一个至少 32 字符的随机密钥（如当前界面无 Generate，可在可信本机密码管理器生成）。它必须独立于两个访问口令。长期保留此值，不要每次部署重新生成。
+5. 点 **Save, rebuild, and deploy**，等部署变成 **Live**。这两个变量直接保存在 Render，Blueprint 没有覆盖它们；不需要改 `ONE_EARBUD_TOKEN`、`MCP_AUTH_TOKEN`、`PORT` 或 `/tmp` 配置。
+6. 首次启用后打开 `/login.html`：如果旧临时文件还在，启动时会迁移一次并删除本地明文副本；如果它已经丢失，需要**最后重新扫码一次**。只有登录态成功写入数据库后，页面才会显示扫码成功。
+7. 验证时先确认扫码成功，再在 Render **Manual Deploy → Deploy latest commit**，等 Live 后重新打开扫码页，应仍显示已连接；打开手机 PWA、点播放并重新上报心跳，再调用 `music_now_playing`。数据库测试不要求重新扫码。
+
+登录态保存在数据库表 `one_earbud_netease_auth` 的加密 `payload` 中；Cookie 和账号资料用 AES-256-GCM 加密，连接强制验证 TLS 证书。服务只在启动时读取和登录/实际 Cookie 更新时写入，心跳和卡片刷新不会反复查库。新 Cookie 会在数据整形前保存，避免搜索、歌词、歌单请求漏存刷新值。
+
+**不要更换或丢失加密密钥。** 数据库连接故障、密钥错误或加密数据损坏时，服务不会退回临时文件、覆盖数据库或把它伪装成未登录；启动会失败，应修复变量/连接后重试。在运行中遇到短暂写入故障会返回 `MUSIC_AUTH_STORAGE_UNAVAILABLE`，保留已加载的登录态，稍后重试。主动“退出网易云”会持久记录退出，之后重启不会重新登录。
+
+此功能只持久化网易云登录。它不能保证永不扫码：网易云主动撤销/过期的 Cookie、换号、安全风控，仍需重新登录。已丢失的临时文件无法凭空恢复。现有 OAuth 状态和队列仍可能随 Render 文件系统清空而丢失，必要时重新连接 ChatGPT、重新导入歌单；这不会删除数据库中的网易云登录态。
+
 ### 环境变量清单
 
 | 名称 | 填什么 | 是否必需 |
@@ -39,6 +58,8 @@ Render 保存的环境变量口令不会因为临时文件清空而自动更换�
 | `ONE_EARBUD_TOKEN` | 自己生成的长随机口令，仅用于手机网页/API | 必填 |
 | `MCP_AUTH_TOKEN` | 另一个长随机口令，与网页口令不同 | 启用 MCP 必填 |
 | `ONE_EARBUD_DATA_DIR` | `/tmp/one-earbud`，临时目录，不保证保留数据 | Blueprint 已设置 |
+| `ONE_EARBUD_AUTH_DATABASE_URL` | Neon Free 的 PostgreSQL 连接串，包含密码，仅填 Render secret | 免费实例跨部署保留网易云登录时必填 |
+| `ONE_EARBUD_AUTH_ENCRYPTION_KEY` | 独立的至少 32 字符随机密钥，长期保留，不与访问口令共用 | 启用外部登录态存储时必填 |
 | `PORT` | 使用 Render 自动提供的值，不需要手动填写 | 自动 |
 | `MCP_PUBLIC_URL` | 完整 HTTPS origin，如 `https://你的服务.onrender.com`，不带 `/mcp` 或结尾斜杠 | Render 默认可留空，自动读取 `RENDER_EXTERNAL_URL`；自定义域名时填写 |
 | `MCP_OAUTH_REDIRECT_URIS` | 其他 MCP 客户端的完整 OAuth 回调地址，多个用逗号分隔 | 通常留空；ChatGPT 官方回调默认已支持 |
@@ -49,7 +70,7 @@ Render 保存的环境变量口令不会因为临时文件清空而自动更换�
 
 生产环境缺少网页口令时服务会拒绝启动；两个口令相同也会拒绝启动。未设置 `MCP_AUTH_TOKEN` 时 `/mcp` 返回 503，不会匿名开放。
 
-临时数据目录包含 `netease-auth.json`、`queue.json` 和 OAuth 的 `oauth-state.json`。Linux 上登录态和 OAuth 文件使用 0600 权限。OAuth 文件保存已注册客户端、进行中的授权请求及授权码/访问令牌的哈希，属于私密数据，和整个数据目录一起保护，不要提交 Git。文件存在本地不等于免费实例会持久保存它们。
+未启用外部登录态存储时，临时数据目录包含 `netease-auth.json`、`queue.json` 和 OAuth 的 `oauth-state.json`。启用后网易云登录态以数据库为准，不再写本地明文文件。Linux 上本地登录态和 OAuth 文件使用 0600 权限。OAuth 文件保存已注册客户端、进行中的授权请求及授权码/访问令牌的哈希，属于私密数据，和整个数据目录一起保护，不要提交 Git。文件存在本地不等于免费实例会持久保存它们。
 
 ## 2. 手机连接网易云并开始放歌
 
@@ -150,8 +171,10 @@ music_share 返回的是卡片数据，rendered=false 时不要说已经在 Chat
 | OAuth 回调不支持 | 核对实际回调 URL；其他客户端加入 `MCP_OAUTH_REDIRECT_URIS`，不要填通配符。 |
 | 点击授权后提示请求缺失 / 已使用或状态重置 / 已过期 | 三者分别代表表单请求标识缺失、请求已消费或文件系统清空、真正超过 5 分钟。关闭旧授权标签页，确认 Render 已部署最新 main 后从 ChatGPT 发起新连接；文件系统清空后删除旧连接重新添加。响应头 `X-One-Earbud-OAuth-Error` 只含原因码，不包含口令、授权码或歌曲信息。 |
 | `/api/music` 返回 401 | 在手机首页或扫码页保存 `ONE_EARBUD_TOKEN`。Safari 和主屏幕 PWA 可能需要分别填写。 |
-| `MUSIC_NOT_LOGGED_IN` / `MUSIC_LOGIN_EXPIRED` | 去扫码页重登；免费实例重启、重新部署、休眠或文件系统重置后丢登录属于临时存储限制。 |
-| 重启后队列为空 / ChatGPT 授权失效 | 免费版数据可能已清空；重新导入队列、扫码，并重新连接 ChatGPT。 |
+| `MUSIC_NOT_LOGGED_IN` / `MUSIC_LOGIN_EXPIRED` | 未配置外部存储时，先按 Neon Free 小节完成配置再扫码；已配置时，网易云可能主动撤销了登录，到扫码页重登。 |
+| `MUSIC_AUTH_STORAGE_UNAVAILABLE` / 外部存储启用后无法启动 | 检查 Neon 项目可用性、Render 中的数据库连接串和原加密密钥；不要清空数据库或换密钥，不要贴出秘密。短暂写入故障稍后重试。 |
+| 重启后队列为空 / ChatGPT 授权失效 | 队列和 OAuth 仍使用免费临时文件；重新导入队列并连接 ChatGPT。外部网易云登录态不受影响，无需因此重新扫码。 |
+| 卡片“此刻没有手机实况”，数分钟未更新 | 这是心跳过期，不直接等于网易云登录失效。唤醒服务后打开手机 PWA 并播放，上报新心跳；后台被 iOS 挂起时不能伪造实时状态。MCP 若返回 401，则按 OAuth 重连处理。 |
 | 第一次打开很慢 / MCP 突然超时 | 免费实例可能正在冷启动，先打开手机听歌页，等服务恢复再重试。 |
 | `MUSIC_UNAVAILABLE` | 网易云版权、会员、地区限制，换首歌/版本；本项目不会绕过这些限制。 |
 | 已加歌但手机没变化 | 手机打开的是同一个服务吗？网络是否正常、是否在前台？重新打开页面再查队列。 |
@@ -162,7 +185,7 @@ music_share 返回的是卡片数据，rendered=false 时不要说已经在 Chat
 
 使用 Node 22 或更新版本：`npm install`，复制 `.env.example` 为 `.env`，填写两个不同的口令，再 `npm start`。本机默认地址是 `http://localhost:8787`。OAuth 仅在提供公网 origin 时启用，本机 Bearer 测试无需公网地址。
 
-运行 `npm test`，包含原有后端与播放器场景、新增 MCP SDK HTTP 集成、OAuth 和手机播放同步模拟。网易云请求全部 mock，不需要真实扫码或账号。Windows 不验证 POSIX mode bits；Linux/Render 保留 0600 断言。
+运行 `npm test`，包含原有后端与播放器场景、MCP SDK HTTP 集成、OAuth 和手机播放同步模拟，以及外部登录态的冷启动恢复、刷新、退出、并发、加密、故障和迁移测试。网易云和持久化数据库在测试中 mock，不需要真实扫码或账号；测试不证明你的 Neon/Render 环境变量已经配置。Windows 不验证 POSIX mode bits；Linux/Render 保留 0600 断言。
 
 实现追踪：`server/mcp.js` 只适配 `server/agent/tool-contract.js`，后者继续使用 music authority / queue。`play_now` 在原队列操作后发布短期指令；`web/music/player.js` 同步并复用原播放内核。没有重新实现网易云接口。
 

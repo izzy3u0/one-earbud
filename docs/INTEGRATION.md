@@ -41,7 +41,7 @@
 - **页面上有什么**：没登录时是「生成二维码」；扫码中显示「等你扫码 / 扫到了，在 App 里点确认 / 过期了」；登录后显示昵称、是否会员、「退出登录」。
 - **同一台手机怎么扫**：长按二维码存进相册，在网易云 App 的扫一扫里选相册。
 - **登录过期**：接口会返回 `MUSIC_LOGIN_EXPIRED` / `MUSIC_NOT_LOGGED_IN`，搜歌抽屉会提示「还没连上网易云」。前端控件接受一个 `onNeedLogin` 钩子，你可以在里面引导 YOU 去授权页。
-- **登录态存哪**：服务器 `ONE_EARBUD_DATA_DIR/netease-auth.json`，权限 0600，从不通过任何读接口返回。
+- **登录态存哪**：默认服务器 `ONE_EARBUD_DATA_DIR/netease-auth.json`，权限 0600，从不通过任何读接口返回。Render Free 可选外部加密 PostgreSQL 保存登录态，见 [MCP.md](MCP.md)；自定义宿主需在监听 HTTP 前 `await prepareMusicAuthStore()`，把返回的 store 注入 `createMusicAuthority({ store })`，参照 `server/example-server.js`。
 
 ## 3. 前端控件，一个一个接
 

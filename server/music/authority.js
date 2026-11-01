@@ -14,8 +14,8 @@ function fmt(ms) { const s = Math.floor((ms || 0) / 1000); return Math.floor(s /
 
 function createMusicAuthority(options) {
   options = options || {};
-  const client = options.client || netease;
   const store = options.store || createMusicAuthStore(options);
+  const client = options.client || netease.createClient({ onCookie: (cookie, baseCookie) => store.refreshCookie(cookie, baseCookie) });
   const nowPlaying = options.nowPlaying || createNowPlaying(options);
   const queue = options.queue || createMusicQueueStore(options.queueFile ? { file: options.queueFile } : undefined);
   let uidCache = '';
@@ -24,7 +24,7 @@ function createMusicAuthority(options) {
     const saved = st && st.profile && String(st.profile.userId || '');
     if (/^\d+$/.test(saved)) return saved;
     if (uidCache) return uidCache;
-    const acc = await client.account(store.cookie());
+    const acc = await withCookie(c => client.account(c));
     uidCache = String(acc.profile && acc.profile.userId || '');
     return uidCache;
   }
@@ -36,12 +36,12 @@ function createMusicAuthority(options) {
   async function withCookie(fn) {
     const cookie = store.cookie();
     const out = await fn(cookie);
-    if (out && out.cookie) { store.refreshCookie(out.cookie); delete out.cookie; }
+    if (out && out.cookie) { await store.refreshCookie(out.cookie, cookie); delete out.cookie; }
     return out;
   }
   async function lyricsCached(songId) {
     if (lyricCache.has(songId)) return lyricCache.get(songId);
-    const r = await client.lyrics(store.cookie(), songId);
+    const r = await withCookie(c => client.lyrics(c, songId));
     lyricCache.set(songId, r.lines);
     if (lyricCache.size > 20) lyricCache.delete(lyricCache.keys().next().value);
     return r.lines;
@@ -109,15 +109,15 @@ function createMusicAuthority(options) {
       if (now() > exp) { pendingQr.delete(key); return { status: 'expired' }; }
       const r = await client.checkQr(key);
       if (r.status !== 'success') { if (r.status === 'expired') pendingQr.delete(key); return { status: r.status }; }
-      pendingQr.delete(key);
       const acc = await client.account(r.cookie);
-      store.save(acc.cookie || r.cookie, acc.profile, acc.vip, now());
+      await store.save(acc.cookie || r.cookie, acc.profile, acc.vip, now());
+      pendingQr.delete(key);
       return { status: 'success', profile: acc.profile, vip: acc.vip };
     },
-    logout() { store.clear(); nowPlaying.clear(); return { connected: false }; },
+    async logout() { await store.clear(); uidCache = ''; nowPlaying.clear(); return { connected: false }; },
     async search(q, limit) { return withCookie(async c => ({ songs: await client.search(c, q, limit) })).then(r => r.songs); },
     async song(songId) {
-      const [detail, lines] = await Promise.all([client.songDetail(store.cookie(), songId), lyricsCached(String(songId))]);
+      const [detail, lines] = await Promise.all([withCookie(c => client.songDetail(c, songId)), lyricsCached(String(songId))]);
       return Object.assign({}, detail, { lyrics: lines });
     },
     async lyrics(songId) { return lyricsCached(String(songId)); },
