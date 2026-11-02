@@ -225,6 +225,63 @@ test('unplayable media still returns the owning lease so the user can safely fal
   assert.equal(f.authority.playbackOwner().mode,'pwa');assert.equal(f.authority.playbackOwner().handoff,null);f.authority.playUrl=original;
 });
 
+test('real MCP resumes the same logical card without handoff; live originals stay audible and retired mounts cannot reclaim',async t=>{
+  const f=await fixture(t),sourceId='widget-stable-card',instanceId='mount-original-A';
+  f.authority.queue.append({by:'you',songs:[song(1),song(2)]});let owner=f.authority.playbackOwner();
+  const call=args=>f.widget({sourceId,...args});
+  await call({op:'switch',target:'chatgpt',instanceId,requestId:'stable-first-switch',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});owner=f.authority.playbackOwner();
+  const initial=await call({op:'claim',instanceId,requestId:'stable-first-claim',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});
+  await call({op:'report',instanceId,...initial._meta.lease,sequence:1,trackId:initial._meta.audio.trackId,songId:'1',positionMs:42000,playing:true,playbackIntent:true});
+  const version=f.authority.nowPlayingVersion();
+  for(let i=0;i<12;i++){
+    const restored=await call({op:'resume',instanceId:'mount-restored-'+i,expectedEpoch:owner.epoch,expectedStreamId:owner.streamId,playing:true});
+    assert.equal(restored.structuredContent.attachment,'observer');assert.equal(restored._meta?.lease,undefined);assert.equal(restored._meta?.audio,undefined);
+    assert.equal(restored.structuredContent.playback.handoff,null);assert.equal(restored.structuredContent.playback.epoch,owner.epoch);assert.equal(f.authority.nowPlayingVersion().revision,version.revision);
+    assert.equal((await f.read('now_playing')).state,'playing');
+  }
+  const next=await call({op:'track',instanceId,...initial._meta.lease,trackId:initial._meta.audio.trackId,direction:'next',playing:true,requestId:'stable-next-track'});
+  await call({op:'report',instanceId,...initial._meta.lease,sequence:2,trackId:next._meta.audio.trackId,songId:'2',positionMs:72000,playing:true,playbackIntent:true});
+  await call({op:'release',instanceId,...initial._meta.lease,sequence:3,positionMs:72000,playbackIntent:true});
+  const replacements=await Promise.all(['mount-new-owner-A','mount-new-owner-B'].map(instanceId=>call({op:'resume',instanceId,expectedEpoch:owner.epoch,expectedStreamId:owner.streamId,playing:true})));
+  assert.equal(replacements.filter(x=>x._meta?.lease).length,1,'concurrent mounts never create two audio owners');
+  const ready=replacements.find(x=>x._meta?.lease),newInstance='mount-new-owner-A';
+  assert.equal(ready._meta.audio.song.songId,'2');assert.equal(ready._meta.audio.positionMs,72000);assert.equal(ready._meta.audio.playing,true);assert.equal(ready.structuredContent.playback.epoch,owner.epoch);assert.equal(ready.structuredContent.playback.handoff,null);
+  assert.equal((await call({op:'report',instanceId:newInstance,...ready._meta.lease,sequence:1,trackId:ready._meta.audio.trackId,songId:'2',positionMs:73000,playing:true,playbackIntent:true})).structuredContent.accepted,true);
+  const before=f.authority.nowPlayingVersion().revision;
+  for(const op of ['report','release','resume','switch']){
+    const rejected=await call({op,instanceId,...initial._meta.lease,sequence:999999,trackId:initial._meta.audio.trackId,songId:'1',positionMs:0,playing:false,target:'pwa',requestId:'retired-switch-request',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});
+    assert.equal(rejected.structuredContent.attachmentLost,true);assert.equal(f.authority.nowPlayingVersion().revision,before);
+  }
+  assert.equal((await call({op:'resume',sourceId:'widget-different-card',instanceId:'mount-unrelated-A',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId,playing:true}))._meta?.lease,undefined);
+  await call({op:'report',instanceId:newInstance,...ready._meta.lease,sequence:2,trackId:ready._meta.audio.trackId,songId:'2',positionMs:74000,playing:false,playbackIntent:false});
+  await call({op:'release',instanceId:newInstance,...ready._meta.lease,sequence:3,positionMs:74000,playbackIntent:false});
+  const paused=await call({op:'resume',instanceId:'mount-user-paused-A',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId,playing:true});
+  assert.equal(paused._meta.audio.playing,false,'an old UI checkpoint cannot undo an explicit pause');
+});
+
+test('wall-clock remounted views observe and resume one ChatGPT session without handoffs',{skip:!process.env.ONE_EARBUD_RESUME_STABILITY_MS},async t=>{
+  const f=await fixture(t),started=Date.now(),duration=Number(process.env.ONE_EARBUD_RESUME_STABILITY_MS),sourceId='widget-wall-stable';let instanceId='mount-wall-original',sequence=0,samples=0,restores=0;
+  f.authority.queue.append({by:'you',song:song(1)});let owner=f.authority.playbackOwner();
+  const call=args=>f.widget({sourceId,...args});await call({op:'switch',target:'chatgpt',instanceId,requestId:'wall-stable-switch',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});owner=f.authority.playbackOwner();
+  let active=await call({op:'claim',instanceId,requestId:'wall-stable-claim',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});
+  while(Date.now()-started<duration){
+    f.tick(1000);const positionMs=42000+samples*1000;
+    await call({op:'report',instanceId,...active._meta.lease,sequence:++sequence,trackId:active._meta.audio.trackId,songId:'1',positionMs,playing:true,playbackIntent:true});
+    const mount='mount-wall-restored-'+samples,resume={op:'resume',instanceId:mount,expectedEpoch:owner.epoch,expectedStreamId:owner.streamId,playing:true};
+    const observed=await call(resume);assert.equal(observed.structuredContent.attachment,'observer');assert.equal(observed._meta?.audio,undefined);
+    if(samples%10===9){
+      const old={instanceId,...active._meta.lease,trackId:active._meta.audio.trackId};
+      await call({op:'release',...old,sequence:++sequence,positionMs,playbackIntent:true});active=await call(resume);instanceId=mount;sequence=0;restores++;
+      assert.ok(active._meta?.audio);assert.equal(active._meta.audio.positionMs,positionMs);
+      assert.equal((await call({op:'report',...old,sequence:999999,songId:'1',positionMs:0,playing:false})).structuredContent.accepted,false);
+      await call({op:'report',instanceId,...active._meta.lease,sequence:++sequence,trackId:active._meta.audio.trackId,songId:'1',positionMs,playing:true,playbackIntent:true});
+    }
+    const [state,card]=await Promise.all([f.read('now_playing'),f.read('player_state')]);assert.equal(state.playbackMode,'chatgpt');assert.equal(state.state,'playing');assert.equal(state.positionMs,positionMs);assert.equal(card.revision,state.revision);assert.equal(card.playback.handoff,null);assert.equal(card.playback.epoch,owner.epoch);
+    samples++;await wait(1000);
+  }
+  t.diagnostic(JSON.stringify({wallSeconds:Math.round((Date.now()-started)/1000),samples,restores,handoffs:0,epochChanges:0}));
+});
+
 test('wall-clock V2 alternating playback ownership and continuous MCP state observation',{skip:!process.env.ONE_EARBUD_V2_STABILITY_MS},async t=>{
   const f=await fixture(t),started=Date.now(),duration=Number(process.env.ONE_EARBUD_V2_STABILITY_MS);let samples=0,transfers=0,lease=null,track=null,sequence=0;
   await f.api('/api/music/queue/append',{method:'POST',body:{songs:[song(1),song(2)]}});await f.p.player.refreshQueue();await f.p.player.playQueueItem(f.p.player.getQueue().items[0].id);await wait(60);

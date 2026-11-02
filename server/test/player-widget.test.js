@@ -283,3 +283,36 @@ test('actual card retains handoff song and progress past heartbeat expiry, then 
     assert.equal(authority.reportNowPlaying({...phone,sequence:999,...song,positionMs:0,playing:false}),false);assert.equal(authority.nowPlaying().state,'playing');
   } finally {await f.close();}
 });
+
+test('real widget remount automatically restores its stable card, never switches, and resumes released audio at the latest position',async t=>{
+  const os=require('node:os'),{createMusicAuthority}=require('../music/authority'),{createTaMusicTool}=require('../agent/tool-contract');
+  const {createPlayerView}=require('../music/player-view'),{createWidgetPlayback}=require('../music/widget-playback');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'earbud-remount-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const f=fixture({audio:true,idPrefix:'original-mount-'}),settle=async()=>{for(let i=0;i<20;i++)await flush();};
+  const song={songId:'1',title:'Continuous song',artist:'Artist',durationMs:180000};
+  const authority=createMusicAuthority({queueFile:path.join(dir,'queue.json'),store:{cookie:()=>'',refreshCookie(){}},client:{songDetail:async()=>song,lyrics:async()=>({lines:[{index:0,timeMs:0,text:'Continuous lyric'}]}),playUrl:async()=>({url:'https://m701.music.126.net/test.mp3'})}});
+  authority.queue.append({by:'you',song});const view=createPlayerView({authority,tool:createTaMusicTool({authority})}),adapter=createWidgetPlayback({authority,publicUrl:'https://music.example.test'});
+  const handle=async(name,args)=>name==='music_player_state'?{structuredContent:await view()}:adapter.handle(args);
+  let restored,duplicate;
+  try {
+    await f.initialize();f.serveTools(handle);await f.respond(f.last(),{structuredContent:await view()});
+    f.elements['playback-mode'].value='chatgpt';await f.elements['playback-mode'].emit('change');await settle();
+    const original=f.elements['local-audio'];original.readyState=1;await original.emit('loadedmetadata');await f.elements.toggle.emit('click');await settle();original.currentTime=42;await original.emit('seeked');await settle();
+    const saved=f.savedStates.at(-1),sourceId=saved.privateContent.playbackClient.sourceId,owner=authority.playbackOwner();assert.equal(owner.sourceId,sourceId);
+    assert.doesNotMatch(JSON.stringify(saved),/sessionId|widget-media|TEST_ONLY_COOKIE|MCP_AUTH_TOKEN|ONE_EARBUD_TOKEN/);
+    f.document.hidden=true;f.intersect(false);await f.document.emit('visibilitychange');
+    restored=fixture({audio:true,idPrefix:'restored-mount-',widgetState:saved});await restored.initialize();restored.serveTools(handle);await restored.respond(restored.last(),{structuredContent:await view()});await settle();
+    assert.equal(restored.savedStates.at(-1).privateContent.playbackClient.sourceId,sourceId);
+    assert.equal(original.paused,false);assert.equal(restored.elements['local-audio'].playCalls,0);assert.equal(restored.elements.status.textContent,'ChatGPT正在播放');assert.equal(restored.elements['mode-status'].textContent,'此卡片播放');assert.equal(restored.elements['pause-icon'].hidden,false);assert.equal(restored.elements['current-line'].textContent,'Continuous lyric');
+    for(let i=0;i<10;i++){original.currentTime=43+i;await original.emit('seeked');await settle();restored.tick(5000);await settle();assert.equal(authority.playbackOwner().epoch,owner.epoch);assert.equal(authority.playbackOwner().handoff,null);assert.equal(original.paused,false);}
+    restored.elements['playback-mode'].value='chatgpt';await restored.elements['playback-mode'].emit('change');await settle();
+    assert.equal(restored.sent.filter(x=>x.params?.name==='music_widget_playback'&&['switch','claim'].includes(x.params.arguments.op)).length,0,'restoration and repeated select do not request a handoff');
+    const old=f.sent.filter(x=>x.params?.name==='music_widget_playback'&&x.params.arguments.op==='report').at(-1).params.arguments;
+    await f.close();await settle();assert.equal(original.paused,true);
+    restored.tick(5000);await settle();const audio=restored.elements['local-audio'];assert.match(audio.src,/widget-media/);audio.readyState=1;await audio.emit('loadedmetadata');await settle();
+    assert.equal(audio.currentTime,52);assert.equal(audio.paused,false);assert.equal(audio.playCalls,1);assert.equal(authority.playbackOwner().epoch,owner.epoch);assert.equal(authority.playbackOwner().handoff,null);
+    assert.equal((await adapter.handle({...old,sequence:999999,playing:false,positionMs:0})).structuredContent.accepted,false);assert.equal(authority.nowPlaying().state,'playing');
+    duplicate=fixture({audio:true,idPrefix:'duplicate-mount-',widgetState:restored.savedStates.at(-1)});await duplicate.initialize();duplicate.serveTools(handle);await duplicate.respond(duplicate.last(),{structuredContent:await view()});await settle();
+    assert.equal(audio.paused,false);assert.equal(duplicate.elements['local-audio'].playCalls,0);assert.equal(authority.playbackOwner().handoff,null);
+  }finally{if(duplicate)await duplicate.close();if(restored)await restored.close();await f.close();}
+});

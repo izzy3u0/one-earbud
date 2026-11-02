@@ -10,13 +10,17 @@ function mediaUrl(value) {
   } catch (_) { return null; }
 }
 function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstream = https.request }) {
-  const sessions = new Map(), tickets = new Map(), writes = new Map(), acquisitions = new Map();
+  const sessions = new Map(), tickets = new Map(), writes = new Map(), acquisitions = new Map(), retiredInstances = new Set();
   const failure = (error,message) => ({ structuredContent:{ ok:false,error,message },isError:true,content:[{type:'text',text:message}] });
   function reply(extra = {}, meta = {}) {
     const result = { ok:true,playback:authority.playbackOwner(),...extra };
     return { structuredContent:result,content:[{type:'text',text:JSON.stringify(result)}],_meta:meta };
   }
-  function valid(input) { return authority.playbackOwner().mode === 'chatgpt' && authority.ownsNowPlaying(input); }
+  function valid(input) {
+    const session=sessions.get(input.sessionId);
+    return authority.playbackOwner().mode === 'chatgpt' && authority.ownsNowPlaying(input) && (!session?.instanceId || session.instanceId===input.instanceId);
+  }
+  function retire(instanceId) {if(!instanceId)return;retiredInstances.add(instanceId);if(retiredInstances.size>300)retiredInstances.delete(retiredInstances.values().next().value);}
   function select(session, songId, positionMs, playing) {
     session.songId = String(songId); session.trackId = randomUUID(); session.positionMs = positionMs || 0;
     session.trackVersion=(session.trackVersion||0)+1;
@@ -40,12 +44,15 @@ function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstr
     const token=randomBytes(24).toString('base64url'), expiresAt=now()+10*60*1000;
     for (const [key,ticket] of tickets) if(ticket.expiresAt<=now()) tickets.delete(key);
     if(tickets.size>=100) tickets.delete(tickets.keys().next().value);
-    tickets.set(token,{url,session,trackId,expiresAt});
+    tickets.set(token,{url,session,trackId,expiresAt,instanceId:session.instanceId});
     session.audio={song:{songId:String(song.songId),title:String(song.title||''),artist:String(song.artist||''),coverUrl:song.coverUrl||'',durationMs:Number(song.durationMs)||0},lyrics:song.lyrics||[],trackId,trackVersion:session.trackVersion,streamId:session.streamId,modeEpoch:session.modeEpoch,positionMs:session.positionMs,playing:session.playing,url:publicUrl+'/widget-media/'+token,expiresAt};
     return session.audio;
   }
   async function run(input) {
     const owner=authority.playbackOwner();
+    if(input.instanceId && retiredInstances.has(input.instanceId))return reply({accepted:false,attachmentLost:true});
+    const inputSession=sessions.get(input.sessionId);
+    if(inputSession?.instanceId && inputSession.instanceId!==input.instanceId)return reply({accepted:false,attachmentLost:true});
     if(input.op==='switch') {
       const result=authority.switchPlayback(input);
       if(!result.ok) return failure(result.error,'播放端已变化或仍在切换，请刷新后重试。');
@@ -54,40 +61,60 @@ function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstr
       return reply();
     }
     if(input.op==='ack') return reply({accepted:authority.acknowledgeHandoff(input)});
-    if(input.op==='release') return reply({accepted:valid(input)&&authority.releasePlayback(input)});
+    if(input.op==='release') {
+      const accepted=valid(input)&&authority.releasePlayback(input);
+      if(accepted){const session=sessions.get(input.sessionId);if(session){session.positionMs=input.positionMs;session.playing=false;if(typeof input.playbackIntent==='boolean')session.intent=input.playbackIntent;}retire(input.instanceId);}
+      return reply({accepted});
+    }
     if(input.op==='report') {
       const session=sessions.get(input.sessionId);
       if(!session || !valid(input) || input.trackId!==session.trackId || input.songId!==session.songId) return reply({accepted:false});
       const accepted=authority.reportNowPlaying({...input,title:session.audio?.song.title||'',artist:session.audio?.song.artist||'',durationMs:session.audio?.song.durationMs||0});
-      if(accepted) {session.positionMs=input.positionMs;session.playing=input.playing;}
+      if(accepted) {session.positionMs=input.positionMs;session.playing=input.playing;session.intent=typeof input.playbackIntent==='boolean'?input.playbackIntent:input.playing;session.sequence=input.sequence;}
       return reply({accepted});
     }
     if(owner.mode!=='chatgpt' || owner.sourceId!==input.sourceId || owner.handoff) return reply();
     let lease,session;
-    if(input.op==='claim') {
-      if(!input.requestId || input.expectedEpoch!==owner.epoch || input.expectedStreamId!==owner.streamId)return failure('PLAYBACK_CHANGED','播放端已变化，请重新选择。');
-      const existing=acquisitions.get(input.requestId);
-      if(existing) {
-        if(existing.sourceId!==input.sourceId)return failure('REQUEST_ID_CONFLICT','请求标识已被使用。');
-        if(!valid(existing))return reply();
-        lease=existing;
-      } else {
+    let restored=false;
+    const previous=[...sessions.values()].reverse().find(s=>s.sourceId===input.sourceId);
+    if(input.op==='claim'||input.op==='resume') {
+      if((input.op==='claim'&&!input.requestId) || input.expectedEpoch!==owner.epoch || input.expectedStreamId!==owner.streamId)return failure('PLAYBACK_CHANGED','播放端已变化，请重新选择。');
+      const acquisition=input.op==='claim'&&acquisitions.get(input.requestId);
+      if(acquisition&&(acquisition.sourceId!==input.sourceId||acquisition.instanceId!==input.instanceId))return failure('REQUEST_ID_CONFLICT','请求标识已被使用。');
+      if(input.op==='resume'&&!input.instanceId)return failure('INVALID_RESUME','恢复实例标识缺失。');
+      const active=[...sessions.values()].find(s=>s.sourceId===input.sourceId&&valid(s));
+      // An active mount retains its element, even while paused. A second view
+      // observes/controls it; only an explicitly released lease can be resumed.
+      if(owner.ownerSourceId===input.sourceId && (!active || active.instanceId!==input.instanceId))return reply({attachment:'observer'});
+      if(input.op==='resume') {
         lease=authority.claimNowPlaying({sourceId:input.sourceId,active:true,playbackMode:'chatgpt',modeEpoch:owner.epoch});
         if(!lease)return reply();
-        acquisitions.set(input.requestId,{...lease,sourceId:input.sourceId});if(acquisitions.size>100)acquisitions.delete(acquisitions.keys().next().value);
+        session=sessions.get(lease.sessionId);restored=true;
+      } else {
+        const existing=acquisitions.get(input.requestId);
+        if(existing) {
+          if(!valid(existing))return reply();
+          lease=existing;
+        } else {
+          lease=authority.claimNowPlaying({sourceId:input.sourceId,active:true,playbackMode:'chatgpt',modeEpoch:owner.epoch});
+          if(!lease)return reply();
+          acquisitions.set(input.requestId,{...lease,sourceId:input.sourceId,instanceId:input.instanceId});if(acquisitions.size>100)acquisitions.delete(acquisitions.keys().next().value);
+        }
+        session=sessions.get(lease.sessionId);
       }
-      session=sessions.get(lease.sessionId);
     } else {
       session=sessions.get(input.sessionId);
       if(!session || !valid(input))return reply();
       lease=session;
     }
     if(!session) {
-      session={...lease,sourceId:input.sourceId};sessions.set(lease.sessionId,session);
+      session={...lease,sourceId:input.sourceId,instanceId:input.instanceId,sequence:0};sessions.set(lease.sessionId,session);
       if(sessions.size>30) sessions.delete(sessions.keys().next().value);
       const cur=authority.nowPlaying(), q=authority.queue.get(), saved=owner.resume, item=q.items.find(x=>x.id===q.currentId);
-      const song=saved?.songId?saved:cur||item;
-      if(song) select(session,song.songId,cur?.songId===song.songId?cur.positionMs:saved?.positionMs||0,!!saved?.playing);
+      const song=input.op==='resume'?(cur||previous||saved||item):(saved?.songId?saved:cur||item);
+      const position=input.op==='resume'?(song?.positionMs||0):cur?.songId===song?.songId?cur?.positionMs:saved?.positionMs||0;
+      const intent=input.op==='resume'?(typeof previous?.intent==='boolean'?previous.intent:input.playing===true):!!saved?.playing;
+      if(song)select(session,song.songId,position,intent);
     }
     if(input.op==='track') {
       const old=writes.get(input.requestId);
@@ -103,8 +130,10 @@ function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstr
       if(item)select(session,item.songId,0,authority.nowPlaying()?.state==='playing');
     }
     let audio;
-    try {audio=await descriptor(session);}catch(_){return reply({audioError:'这首暂时无法在 ChatGPT 播放，可重试或切回手机 PWA。'},{lease:{sessionId:lease.sessionId,sourceId:session.sourceId}});}
-    return reply({}, {lease:{sessionId:lease.sessionId,sourceId:session.sourceId},audio,command:command?.action?command:null});
+    const clientLease={sessionId:lease.sessionId,sourceId:session.sourceId,sequence:session.sequence||0};
+    try {audio=await descriptor(session);}catch(_){return reply({audioError:'这首暂时无法在 ChatGPT 播放，可重试或切回手机 PWA。'},{lease:clientLease});}
+    if(restored&&audio)audio={...audio,positionMs:session.positionMs,playing:typeof session.intent==='boolean'?session.intent:session.playing};
+    return reply({attachment:'owner'}, {lease:clientLease,audio,restored,command:command?.action?command:null});
   }
   async function handle(input) {
     try {return await run(input);} catch (_) {return failure('WIDGET_AUDIO_UNAVAILABLE','这首暂时无法在 ChatGPT 播放，可重试或切回手机 PWA。');}
@@ -112,7 +141,7 @@ function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstr
   function serve(req,res) {
     const ticket=tickets.get(req.params.ticket);
     res.set({'Cache-Control':'no-store','Access-Control-Allow-Origin':'*','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff'});
-    if(!ticket || ticket.expiresAt<=now() || !valid(ticket.session) || ticket.trackId!==ticket.session.trackId) return res.status(403).end();
+    if(!ticket || ticket.expiresAt<=now() || !valid(ticket.session) || ticket.instanceId!==ticket.session.instanceId || ticket.trackId!==ticket.session.trackId) return res.status(403).end();
     const range=req.headers.range;
     if(range && !/^bytes=\d*-\d*$/.test(range))return res.status(416).end();
     let connection,remote,done=false;
@@ -132,7 +161,7 @@ function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstr
         if(response.statusCode!==416 && !/^(audio\/|application\/octet-stream$)/.test(type)){response.resume();return res.status(502).end();}
         res.status(response.statusCode);res.set('Content-Type',type);
         for(const key of ['content-length','content-range','accept-ranges']) if(response.headers[key])res.set(key,response.headers[key]);
-        response.on('data',()=>{if(!valid(ticket.session)||ticket.trackId!==ticket.session.trackId){stop();res.destroy();}});
+        response.on('data',()=>{if(!valid(ticket.session)||ticket.instanceId!==ticket.session.instanceId||ticket.trackId!==ticket.session.trackId){stop();res.destroy();}});
         response.on('error',()=>res.destroy());response.pipe(res);
       });
       connection.on('timeout',()=>connection.destroy(new Error('media_timeout')));connection.on('error',()=>{if(!res.headersSent)res.status(502).end();else res.destroy();});connection.end();
