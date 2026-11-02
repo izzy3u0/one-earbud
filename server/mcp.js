@@ -100,11 +100,16 @@ function mountMcp(app, { authority, token, publicUrl, oauth }) {
     res.setHeader('Cache-Control', 'no-store');
     if (!token) return res.status(503).json({ error: 'MCP_DISABLED', message: 'Set MCP_AUTH_TOKEN to enable MCP.' });
     let authorized = tokenMatches(bearer(req), token);
-    if (!authorized && oauth) authorized = await oauth.verify(bearer(req));
+    try { if (!authorized && oauth) authorized = await oauth.verify(bearer(req)); }
+    catch (_) {
+      console.warn('[one-earbud:oauth] storage_unavailable');
+      return res.status(503).set('Retry-After', '5').json({ error: 'OAUTH_STORAGE_UNAVAILABLE' });
+    }
     if (!authorized) {
       res.setHeader('WWW-Authenticate', publicUrl
         ? 'Bearer resource_metadata="' + publicUrl + '/.well-known/oauth-protected-resource/mcp"'
         : 'Bearer realm="one-earbud-mcp"');
+      if (bearer(req)) res.setHeader('WWW-Authenticate', res.getHeader('WWW-Authenticate') + ', error="invalid_token", scope="music"');
       return res.status(401).json({ error: 'UNAUTHORIZED' });
     }
     if (req.headers.origin && req.headers.origin !== (publicUrl || 'http://' + req.headers.host)) return res.status(403).json({ error: 'ORIGIN_NOT_ALLOWED' });

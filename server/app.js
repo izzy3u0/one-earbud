@@ -27,12 +27,12 @@ function createApp(options = {}) {
   });
   mountMusicRoutes(router, authority);
   app.use('/api', router);
-  const oauth = publicUrl && mcpToken ? mountOAuth(app, { publicUrl, token: mcpToken, dataDir: options.dataDir }) : null;
+  const oauth = publicUrl && mcpToken ? mountOAuth(app, { publicUrl, token: mcpToken, dataDir: options.dataDir, store: options.oauthStore, now: options.oauthNow, diagnostic: options.oauthDiagnostic }) : null;
   mountMcp(app, { authority, token: mcpToken, publicUrl, oauth });
   app.use(express.static(path.join(__dirname, '..', 'web'), { setHeaders(res) { res.setHeader('Cache-Control', 'no-cache'); } }));
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
-    res.status(error.type === 'entity.parse.failed' ? 400 : 500).json({ ok: false, error: 'REQUEST_FAILED' });
+    res.status(error.type === 'entity.parse.failed' ? 400 : error.code === 'OAUTH_STORAGE_UNAVAILABLE' ? 503 : 500).json({ ok: false, error: error.code === 'OAUTH_STORAGE_UNAVAILABLE' ? error.code : 'REQUEST_FAILED' });
   });
   return { app, authority };
 }
