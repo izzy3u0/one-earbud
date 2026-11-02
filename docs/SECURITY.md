@@ -6,6 +6,8 @@ ChatGPT 内嵌卡片的资源读取和控件调用继续使用同一 OAuth/Beare
 
 ## 登录信息存在哪
 
+V2 的播放端交接只使用内存中的 epoch/会话/序号/trackId，不改网易云或 OAuth 存储。卡片取得的音频能力地址仅在工具 `_meta` 中传递，限定当前播放会话与歌曲，10 分钟过期；不包含现有网页/MCP 口令或网易云 Cookie。`/widget-media` 不是普通公开代理：只能转发已由后端解析并通过域名/HTTPS 验证的网易云地址，支持 Range，不转发调用者鉴权头或上游 Set-Cookie。不要分享能力地址。详见 [MCP-UI.md](MCP-UI.md)。
+
 - 网易云登录态：默认服务器 `ONE_EARBUD_DATA_DIR/netease-auth.json`，文件权限 0600，原子写入。
 - Render Free 推荐设置 `ONE_EARBUD_AUTH_DATABASE_URL` 和独立的 `ONE_EARBUD_AUTH_ENCRYPTION_KEY`：Cookie/账号资料以 AES-256-GCM 保存到 PostgreSQL 表 `one_earbud_netease_auth`，强制验证数据库 TLS 证书；数据库连接串和加密密钥仅存在 Render 环境变量，不提交仓库。启动完成恢复后才监听端口；配置失败不回退、不清空登录。迁移成功后删除原明文文件。队列存储不变。
 - OAuth 使用同一对已有数据库/加密变量，独立加密保存到 `one_earbud_oauth_state`（与网易云使用不同 AAD）。动态注册、进行中的授权、授权码和 token 哈希均持久化，不在普通重启时消失。事务行锁保证并发更新和刷新令牌单次消费；1 小时 access TTL、30 天轮换 refresh TTL、PKCE、客户端/受众约束均保留。缺少数据库配置才沿用本地私密文件。数据库故障不回退临时状态、不删除已有授权。诊断日志只输出固定原因码，绝不输出客户端 ID、请求参数、授权码或令牌。

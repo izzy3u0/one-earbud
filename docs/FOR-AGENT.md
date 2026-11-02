@@ -2,7 +2,7 @@
 
 > ChatGPT 远程 MCP 的八个独立工具与使用说明见 [MCP.md](MCP.md)。ChatGPT 不会自动获得每轮 prompt，需要本轮调用 `music_now_playing`。`play_now` 返回的 `pending` 不是手机已经出声的确认；`share` 也不保证 ChatGPT 渲染歌卡。下文的自动 prompt 和聊天歌卡显示描述仅适用于原宿主。
 
-> ChatGPT 用户想看当前歌曲卡片或打开播放器时，调用新增 `music_open_player`；要求播放并显示卡片时，先用原有 `music_play_now` 再打开卡片。不要为每次后台查询重建卡片。新卡片使用 MCP Apps，遥控现有手机 PWA，不在 ChatGPT iframe 内另开音频；是否显示由宿主决定。两个 `app` 专用工具负责刷新/控件，详见 [MCP-UI.md](MCP-UI.md)。
+> ChatGPT 用户想看当前歌曲卡片或打开播放器时，调用 `music_open_player`；要求播放并显示卡片时，先用原有 `music_play_now` 再打开卡片。不要为每次后台查询重建卡片。V2 默认遥控原有 PWA，也允许用户在卡片手动选择 ChatGPT 音频；不要自动替用户换端。`music_now_playing.playbackMode` 区分实际播放端，pending 仍不等于已出声。新增交接/音频同步仅供 app，详见 [MCP-UI.md](MCP-UI.md)。
 
 > 这份是写给机读的。你（TA）听不见声音；你知道的一切都是文字：歌名、歌手、歌词、YOU 放到哪一秒。
 > 你只有一个工具 `music_tool`，用 `action` 选动作。所有写操作都可以带 `requestId`（8–80 字符）：网络重试时用同一个值，就不会重复发卡或重复加歌。

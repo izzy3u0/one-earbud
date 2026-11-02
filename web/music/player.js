@@ -23,6 +23,10 @@ let heartbeat = 0;
 const reportSource = 'phone-' + (globalThis.crypto?.randomUUID?.() || Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
 let reportSequence = 0, reportLease = null, reportPending = null, reportFlight = null, mayClaim = true;
 let mediaSongId = null, playGeneration = 0, suspended = false;
+let playbackSelection = { mode:'pwa',epoch:0 }, playbackKnown = false, handoffBusy = false, lastResume = null;
+function pwaSelected() { return playbackSelection.mode === 'pwa' && !handoffBusy; }
+function requirePwa() { if(!playbackKnown || !pwaSelected()){state.error=playbackKnown?'当前播放端是 ChatGPT，请先在卡片切回手机 PWA':'正在确认播放端，请稍后再点播放';emit();if(!playbackKnown)syncPlayback();return false;}return true; }
+async function confirmPwa() { if(!playbackKnown)await syncPlayback();return requirePwa(); }
 let urlFetchedAt = 0;
 // 下一首提前备好：快放完时先把下一首的详情和地址要回来，
 // 这首一停直接换上，不再「放完才去问服务器」。
@@ -126,7 +130,7 @@ export function durationMs() {
 }
 
 function report() {
-  if (suspended || !state.song || state.closed || state.loading || mediaSongId !== String(state.song.songId)) return;
+  if (!pwaSelected() || suspended || !state.song || state.closed || state.loading || mediaSongId !== String(state.song.songId)) return;
   // Buffering/visibility changes are not a user pause. Sample the matching audio only.
   reportPending = { sourceId: reportSource, sequence: ++reportSequence, generation:playGeneration, songId: state.song.songId, title: state.song.title, artist: state.song.artist, positionMs: positionMs(), durationMs: durationMs(), playing: !!(state.playing && audio && !audio.paused), active: hasPlaybackSession || !!(audio && !audio.paused) };
   if (!heartbeat) heartbeat = setInterval(report, HEARTBEAT_MS);
@@ -139,7 +143,7 @@ function flushReport() {
       let body = reportPending; reportPending = null;
       if (!reportLease || (body.active && !reportLease.active)) {
         if (!mayClaim) continue;
-        const lease = await apiRequest(API_BASE + '/now-playing/session', { method:'POST', body:{ sourceId:reportSource, active:body.active } });
+        const lease = await apiRequest(API_BASE + '/now-playing/session', { method:'POST', body:{ sourceId:reportSource, active:body.active, modeEpoch:playbackSelection.epoch } });
         if (!lease.accepted) { mayClaim = false; continue; }
         reportLease = { ...lease, active:body.active };
       }
@@ -196,6 +200,7 @@ async function fillDetail() {
 let recovering = null;
 let wantPlay = false; // YOU想让它响着（点了播放、或正在自动接歌）；YOU点暂停/关掉才是 false
 function recover(opts) {
+  if(!requirePwa())return Promise.resolve();
   if (!state.song) return Promise.resolve();
   if (recovering) return recovering;
   const songId = state.song.songId;
@@ -217,6 +222,7 @@ function recover(opts) {
 
 // song：至少要 songId；有 title/artist 先显示，详情和歌词随后补齐
 export async function play(song, atMs, opts) {
+  if(!playbackKnown){if(!await confirmPwa())return;}else if(!requirePwa())return;
   const generation = ++playGeneration;
   if (!opts?.automatic) mayClaim = true; // Only a deliberate play reclaims a fenced page.
   ensureAudio(); wantPlay = true;
@@ -270,6 +276,7 @@ export async function play(song, atMs, opts) {
 }
 
 export function toggle() {
+  if(!requirePwa())return;
   if (!state.song) return;
   mayClaim = true;
   wantPlay = !!(audio && audio.paused) || !audio || !audio.getAttribute('src');
@@ -282,6 +289,7 @@ export function toggle() {
 }
 
 export function seek(ms) {
+  if(!requirePwa())return;
   if (!audio || !state.song) return;
   audio.currentTime = Math.max(0, Math.min(durationMs(), ms)) / 1000;
   emit('time');
@@ -334,6 +342,7 @@ export async function queueOp(path, body, method) {
 function startQueuePoll() { clearInterval(queuePoll); queuePoll = setInterval(() => { if (state.playing) refreshQueue(); }, 60000); }
 
 export async function playQueueItem(id, opts) {
+  if(!playbackKnown){if(!await confirmPwa())return;}else if(!requirePwa())return;
   const item = queue.items.find(x => x.id === id);
   if (!item) return;
   state.queueItemId = item.id;
@@ -376,6 +385,7 @@ async function doPrefetch() {
   } catch (_) {}
 }
 export async function next(opts) {
+  if(!requirePwa())return;
   // 自动接下一首：预取时已经刷新过列表、选好了下一首，直接用；手动点下一首才先刷新
   const auto = !!(opts && opts.auto);
   // 拖到快结尾时，预取可能刚发出去就放完了：等它回来再接，最多等 6 秒
@@ -396,6 +406,7 @@ export async function next(opts) {
   if (target) await playQueueItem(target.id, opts);
 }
 export async function previous() {
+  if(!requirePwa())return;
   await refreshQueue();
   const item = pickPrevious();
   if (item) await playQueueItem(item.id);
@@ -410,6 +421,7 @@ export async function setMode(mode) { return queueOp('/mode', { mode }); }
 // 从卡片、搜歌里点开的一首：插进播放列表当前位置、成为当前这首，放完接着放列表。
 // 服务器没接住（断网之类）就退回老样子：单放这一首，不进列表。
 export async function playSingle(song, atMs) {
+  if(!playbackKnown){if(!await confirmPwa())return;}else if(!requirePwa())return;
   const body = { song: { songId: song.songId, title: song.title, artist: song.artist, coverUrl: song.coverUrl, durationMs: song.durationMs } };
   // 先开始放，插列表跟它同时进行：别让点一下到出声之间多等一次服务器。
   state.queueItemId = null;
@@ -425,6 +437,7 @@ export async function playSingle(song, atMs) {
 // 这边刷新列表、按那一项放。YOU正在听就直接切过去；播放器停着时苹果不让自己出声，
 // 只准备音频地址，听歌栏摆好这首，YOU点一下就响。
 export async function playFromTa(itemId) {
+  if(!requirePwa())return;
   await refreshQueue();
   const item = queue.items.find(x => x.id === itemId);
   // Ignore superseded commands/cards and share one dedupe ledger with polling.
@@ -493,15 +506,57 @@ export function syncPlayback() {
   syncInFlight = (async () => {
     try {
       const result = await apiRequest(API_BASE + '/playback-sync');
+      playbackKnown = true;
       takeQueue(result);
+      if (!await syncPlaybackOwner(result.playback)) return;
       const command = result && result.command;
-      if (command && command.expiresAt > Date.now()) {
+      if (command && command.expiresAt > Date.now() && command.at > (playbackSelection.resume?.at || 0)) {
         if (command.action) await applyPlayerControl(command);
         else if (command.itemId === queue.currentId) await playFromTa(command.itemId);
       }
     } catch (_) { /* Offline/auth failures retry when the page is online again. */ }
   })().finally(() => { syncInFlight = null; });
   return syncInFlight;
+}
+async function syncPlaybackOwner(owner) {
+  if (!owner) return true; // V1/mock hosts remain compatible.
+  playbackSelection = owner;
+  if (owner.handoff && owner.ownerSourceId === reportSource) {
+    handoffBusy = true; ++playGeneration; reportPending = null;
+    const at=positionMs(),playing=!!(audio&&!audio.paused&&!audio.ended),song=mediaSongId===String(state.song?.songId)?state.song:null; wantPlay=false;
+    if(audio) audio.pause();
+    await reportFlight;
+    if(reportLease) {
+      const result=await apiRequest(API_BASE+'/playback-handoff',{method:'POST',body:{sourceId:reportSource,sessionId:reportLease.sessionId,sequence:++reportSequence,handoffId:owner.handoff.id,positionMs:at,...(song?{songId:String(song.songId),title:song.title,artist:song.artist,durationMs:durationMs(),playing}:{})}});
+      playbackSelection=result.playback || owner;
+    }
+    reportLease=null;mayClaim=false;handoffBusy=false;emit();return false;
+  }
+  if (owner.mode!=='pwa' || owner.handoff) {
+    if(audio && !audio.paused) {++playGeneration;reportPending=null;wantPlay=false;audio.pause();}
+    state.error='当前播放端是 ChatGPT，可在音乐卡片切回手机 PWA';emit();return false;
+  }
+  const saved=owner.resume;
+  if(saved?.songId && saved.id!==lastResume && owner.sourceId && owner.sourceId!==reportSource && !hasPlaybackSession && !state.playing) {
+    lastResume=saved.id;handoffBusy=true;
+    try {await prepareQueueItem(queue.items.find(x=>String(x.songId)===saved.songId)||saved);if(audio)audio.currentTime=(saved.positionMs||0)/1000;}
+    finally {handoffBusy=false;}
+    state.error='已准备好交接的歌曲，点播放在此手机继续';emit();
+  }
+  if(saved?.songId && saved.id!==lastResume && (!owner.sourceId || owner.sourceId===reportSource)) {
+    const lease=await apiRequest(API_BASE+'/now-playing/session',{method:'POST',body:{sourceId:reportSource,active:hasPlaybackSession,modeEpoch:owner.epoch}});
+    if(!lease.accepted)return false;
+    reportLease={...lease,active:hasPlaybackSession};mayClaim=true;lastResume=saved.id;
+    handoffBusy=true;
+    try {
+      const item=queue.items.find(x=>String(x.songId)===saved.songId)||saved;
+      await prepareQueueItem(item);
+      if(audio) audio.currentTime=(saved.positionMs||0)/1000;
+    } finally {handoffBusy=false;}
+    if(saved.playing && hasPlaybackSession && audio) {wantPlay=true;audio.play().catch(()=>{state.error='点一下播放键继续';emit();});}
+    report();emit();
+  }
+  return true;
 }
 if (typeof window !== 'undefined') {
   syncTimer = setInterval(syncPlayback, 2000);

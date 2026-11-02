@@ -13,7 +13,7 @@ function createPlayerControls({ authority }) {
     const sync = authority.playbackSync();
     if (sync.command && !sync.command.action && sync.queue.items.find(x => x.id === sync.command.itemId)?.songId !== expectedSongId) return { ok:false, error:'PLAYER_STALE', message:'手机正在切换歌曲，请稍后刷新卡片。' };
     const playback = authority.requestPlayerControl(action, expectedSongId);
-    const result = { ok: true, action, playback, message: '指令已发送，等待手机同步；以手机回报状态为准。首次播放或 Safari 限制时仍需在 PWA 点播放。' };
+    const result = { ok: true, action, playback, message: authority.playbackOwner?.().mode==='chatgpt' ? '指令已发送，等待当前 ChatGPT 卡片同步；以实际音频心跳为准。' : '指令已发送，等待手机同步；以手机回报状态为准。首次播放或 Safari 限制时仍需在 PWA 点播放。' };
     requests.set(requestId, { action, songId: expectedSongId, result });
     if (requests.size > 100) requests.delete(requests.keys().next().value);
     return result;

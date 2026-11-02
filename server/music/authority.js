@@ -53,7 +53,11 @@ function createMusicAuthority(options) {
     queue,
     requestPlayback(itemId) { return playback.publish(itemId); },
     requestPlayerControl(action, songId) { return playback.publishControl(action, songId); },
-    playbackSync() { const q = queue.get(); return { queue: q, command: playback.current(q) }; },
+    playbackSync(endpoint) { const q = queue.get(), owner=nowPlaying.playback(); return { queue: q, command: endpoint==='pwa' && (owner.mode!=='pwa'||owner.handoff) ? null : playback.current(q), playback:owner }; },
+    playbackOwner() { return nowPlaying.playback(); },
+    switchPlayback(input) { return nowPlaying.switchPlayback(input,now()); },
+    acknowledgeHandoff(input) { return nowPlaying.acknowledgeHandoff(input,now()); },
+    releasePlayback(input) { return nowPlaying.release(input,now()); },
     // 导入：YOU的歌单。账号 id 早先存成了空的，缺就现拿一次，放内存里。
     async playlists() {
       const uid = await myUid();

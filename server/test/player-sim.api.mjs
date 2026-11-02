@@ -10,6 +10,7 @@ export async function apiRequest(path, opts) {
   if ((r = path.match(/\/music\/song\/(\d+)\/url$/))) { if (r[1] === '5' || r[1] === '55') { const e = new Error('MUSIC_UNAVAILABLE'); e.code = 'MUSIC_UNAVAILABLE'; throw e; } return { url: 'u' + r[1] }; }
   if ((r = path.match(/\/music\/song\/(\d+)$/))) return { song: { songId: r[1], title: 't' + r[1], artist: 'a', durationMs: 10000, lyrics: [] } };
   if (path.endsWith('/music/now-playing')) return {};
+  if (path.endsWith('/music/playback-sync')) return Q();
   if (path.endsWith('/music/queue') && m === 'GET') return Q();
   if (path.endsWith('/queue/current')) { server.currentId = b.id; return Q(); }
   if (path.endsWith('/queue/mode')) { server.mode = b.mode; return Q(); }

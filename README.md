@@ -16,7 +16,7 @@
 
 **ChatGPT + 独立手机播放器 / PWA + Render 部署：请先看 [docs/MCP.md](docs/MCP.md)。** 本分支保留原组件接入方式，并提供可直接打开的 `/` 听歌首页，以及带独立鉴权的远程 `/mcp`。使用 Node 22+。
 
-**ChatGPT 对话内音乐卡片：见 [docs/MCP-UI.md](docs/MCP-UI.md)。** `music_open_player` 打开 Ash × Izzy 小卡片，显示实况并遥控现有 PWA；声音继续来自 PWA。
+**ChatGPT 对话内音乐卡片：见 [docs/MCP-UI.md](docs/MCP-UI.md)。** `music_open_player` 打开粉色小卡片，默认遥控稳定的手机 PWA；V2 可手动选择 ChatGPT 在卡片内播放，安全交接歌曲/进度，保留 PWA fallback。
 
 ```bash
 git clone https://github.com/izzy3u0/one-earbud.git && cd one-earbud

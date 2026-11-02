@@ -48,7 +48,7 @@ test('MCP SDK initialize, tools/list, search, lyrics, share and safe errors', as
   const client = await connect(t, url);
   assert.equal(client.getServerVersion().name, 'one-earbud');
   const listed = await client.listTools();
-  assert.deepEqual(listed.tools.map(x => x.name).sort(), ['now_playing','lyrics','search','queue','share','play_next','queue_add','play_now','open_player','player_state','player_control'].map(x => 'music_' + x).sort());
+  assert.deepEqual(listed.tools.map(x => x.name).sort(), ['now_playing','lyrics','search','queue','share','play_next','queue_add','play_now','open_player','player_state','player_control','widget_playback'].map(x => 'music_' + x).sort());
   assert.equal((await call(client, 'search', { query: 'Test' })).songs[0].songId, '123');
   assert.equal((await call(client, 'lyrics', { songId: '123' })).lines[1].trans, '测试 1');
   const share = await call(client, 'share', { songId: '123', note: 'Test', lineIndexes: [1] });
@@ -141,7 +141,8 @@ test('MCP Apps resource and render/data split reuse phone freshness, cover and l
   assert.deepEqual(resource._meta.ui.csp.connectDomains, []);
   assert.ok(resource._meta.ui.csp.resourceDomains.every(x => /^https:\/\/p\d+\.music\.126\.net$/.test(x)));
   assert.match(resource.text, /ui\/initialize/);
-  assert.doesNotMatch(resource.text, /<audio|<iframe|fetch\(|test-web-token-placeholder|test-mcp-token-placeholder|TEST_ONLY_NEVER_REAL_COOKIE/);
+  assert.match(resource.text, /<audio id="local-audio"/);
+  assert.doesNotMatch(resource.text, /<iframe|fetch\(|test-web-token-placeholder|test-mcp-token-placeholder|TEST_ONLY_NEVER_REAL_COOKIE/);
   assert.equal((await call(client, 'open_player')).fresh, false);
   authority.queue.append({ by: 'you', song: { ...song('123'), coverUrl: 'https://p1.music.126.net/test.jpg' } });
   authority.reportNowPlaying({ songId:'123', title:'Phone song', artist:'Artist', playing:true, positionMs:10500, durationMs:180000 });
@@ -227,7 +228,7 @@ test('ChatGPT OAuth discovery, owner consent, PKCE, resource binding, refresh an
   assert.equal((await post('/token', exchange)).status, 400);
   const transport = new StreamableHTTPClientTransport(new URL(url + '/mcp'), { requestInit: { headers: { Authorization: 'Bearer ' + tokens.access_token } } });
   const sdk = new Client({ name: 'oauth-test', version: '1' }); await sdk.connect(transport); t.after(() => sdk.close());
-  assert.equal((await sdk.listTools()).tools.length, 11);
+  assert.equal((await sdk.listTools()).tools.length, 12);
   const oauthResource = await sdk.readResource({ uri: require('../mcp').PLAYER_URI });
   assert.equal(oauthResource.contents[0].mimeType, 'text/html;profile=mcp-app');
   assert.equal((await call(sdk, 'open_player')).kind, 'one-earbud-player');

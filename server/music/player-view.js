@@ -13,6 +13,7 @@ const lineSchema = z.object({ index: z.number(), timeMs: z.number(), text: z.str
 const playerViewSchema = z.object({
   ok: z.literal(true), kind: z.literal('one-earbud-player'), sampledAt: z.number(),
   streamId: z.string().optional(), revision: z.number().optional(), observedAt: z.number().nullable().optional(),
+  playback: z.object({ mode:z.enum(['pwa','chatgpt']), epoch:z.number(), streamId:z.string(), sourceId:z.string().nullable(), ownerSourceId:z.string().nullable(), handoff:z.any().nullable(), resume:z.any().nullable() }).optional(),
   fresh: z.boolean(), state: z.enum(['playing', 'paused', 'unknown']),
   current: songSchema.nullable(), prepared: songSchema.nullable(), positionMs: z.number(),
   lyricContext: z.object({ previous: lineSchema, current: lineSchema, next: lineSchema }).nullable(),
@@ -50,6 +51,7 @@ function createPlayerView({ authority, tool }) {
     return {
       ok: true, kind: 'one-earbud-player', sampledAt: Date.now(), fresh: !!current,
       streamId:playing.streamId, revision:playing.revision, observedAt:playing.observedAt,
+      playback:authority.playbackOwner?.(),
       state: current ? playing.state : 'unknown', current,
       prepared: !current && prepared ? song(prepared, safeCover(prepared.coverUrl)) : null,
       positionMs: current ? playing.positionMs : 0,

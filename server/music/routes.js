@@ -40,8 +40,12 @@ function mountMusicRoutes(router, authority) {
   });
   router.post('/music/now-playing/session', (req, res) => {
     nostore(res); if (!guard(res)) return;
-    const session = authority.claimNowPlaying(req.body || {});
+    const session = authority.claimNowPlaying({ ...req.body, playbackMode:'pwa' });
     res.json({ ok: true, accepted: !!session, ...session });
+  });
+  router.post('/music/playback-handoff', (req,res) => {
+    nostore(res); if (!guard(res)) return;
+    res.json({ ok:true, accepted:authority.acknowledgeHandoff(req.body || {}), playback:authority.playbackOwner() });
   });
   router.post('/music/now-playing', (req, res) => {
     nostore(res); if (!guard(res)) return;
@@ -67,7 +71,7 @@ function mountMusicRoutes(router, authority) {
   router.get('/music/queue', q(() => authority.queue.get()));
   router.get('/music/playback-sync', (req, res) => {
     nostore(res); if (!guard(res)) return;
-    res.json({ ok: true, ...authority.playbackSync() });
+    res.json({ ok: true, ...authority.playbackSync('pwa') });
   });
   router.get('/music/playlists', async (req, res) => {
     nostore(res); if (!guard(res)) return;
