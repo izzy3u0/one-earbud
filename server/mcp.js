@@ -12,6 +12,7 @@ const { createWidgetPlayback } = require('./music/widget-playback');
 const PLAYER_URI = 'ui://one-earbud/player-v2.html';
 const PLAYER_MIME = 'text/html;profile=mcp-app';
 const playerHtml = fs.readFileSync(path.join(__dirname, 'ui/player.html'), 'utf8');
+const legacyPlayerHtml = fs.readFileSync(path.join(__dirname, 'ui/player-v1.html'), 'utf8');
 
 function mountMcp(app, { authority, token, publicUrl, oauth }) {
   // Share the business tool across transports so requestId retries remain idempotent.
@@ -46,6 +47,8 @@ function mountMcp(app, { authority, token, publicUrl, oauth }) {
     });
     const security = oauth ? { securitySchemes: [{ type: 'oauth2', scopes: ['music'] }] } : {};
     const reply = result => ({ content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result, ...(result.ok === false ? { isError: true } : {}) });
+    // Existing conversations may still have the V1 tool descriptor cached.
+    server.registerResource('one-earbud-player-v1','ui://one-earbud/player-v1.html',{title:'Ash × Izzy · PWA 稳定卡片',mimeType:PLAYER_MIME},async()=>({contents:[{uri:'ui://one-earbud/player-v1.html',mimeType:PLAYER_MIME,text:legacyPlayerHtml,_meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:COVER_ORIGINS}}}}]}));
     server.registerResource('one-earbud-player', PLAYER_URI, { title: 'Ash × Izzy · 分你一只耳机', mimeType: PLAYER_MIME }, async () => ({
       contents: [{ uri: PLAYER_URI, mimeType: PLAYER_MIME, text: playerHtml.replace('const MEDIA_ORIGIN = null;','const MEDIA_ORIGIN = '+JSON.stringify(publicUrl || null)+';'), _meta: {
         ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [...COVER_ORIGINS,...(publicUrl?[publicUrl]:[])] } },

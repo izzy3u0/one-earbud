@@ -64,6 +64,7 @@ ChatGPT 决定是否渲染 UI、是否允许按钮调用工具、是否要求确
 按照当前 [OpenAI UI 文档](https://developers.openai.com/plugins/build/chatgpt-ui) 和 [quickstart](https://developers.openai.com/plugins/build/app-quickstart) 使用 MCP Apps：
 
 - `music_open_player` 关联 `_meta.ui.resourceUri = ui://one-earbud/player-v2.html`，资源 MIME 为 `text/html;profile=mcp-app`。同时提供 ChatGPT 的 `openai/outputTemplate` 兼容别名。
+- 旧 `player-v1.html` 资源仍保留原 PWA 遥控脚本，避免已有连接缓存旧工具描述时找不到资源；它不获得 V2 音频能力。要使用 V2，刷新工具信息并打开新卡片。
 - 组件用标准 `ui/initialize`、`ui/notifications/tool-result`、`tools/call`、尺寸变更通知和 `ui/resource-teardown` 桥接；以 `window.parent` 校验消息来源。初始化声明只支持 inline；通过 ResizeObserver 上报卡片尺寸。优先标准桥接，旧宿主有 `window.openai.callTool` 时可降级兼容。
 - `music_player_state` 为只读、仅供 app 的刷新工具；视图适配层调用原有 `music_now_playing` 业务处理器、authority/queue 和缓存歌词，不重写网易云接口或 freshness 规则。
 - `music_player_control` 仅供 app，接受四种操作、当前歌曲预期值和必填 requestId。它复用现有 `/api/music/playback-sync` 通道；PWA 调用原播放内核，按命令 ID 去重。服务端保留最近 100 个控件请求；同一次重试必须复用 requestId，重启或淘汰后不保证服务端去重。

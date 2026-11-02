@@ -136,6 +136,7 @@ test('MCP Apps resource and render/data split reuse phone freshness, cover and l
   assert.equal(tools.find(x => x.name === 'music_now_playing')._meta.ui.resourceUri, undefined);
   for (const name of ['music_player_state', 'music_player_control']) assert.deepEqual(tools.find(x => x.name === name)._meta.ui.visibility, ['app']);
   assert.equal((await client.listResources()).resources.find(x => x.uri === PLAYER_URI).mimeType, PLAYER_MIME);
+  const legacy=(await client.readResource({uri:'ui://one-earbud/player-v1.html'})).contents[0];assert.match(legacy.text,/music_player_state/);assert.doesNotMatch(legacy.text,/<audio|music_widget_playback/);
   const resource = (await client.readResource({ uri: PLAYER_URI })).contents[0];
   assert.equal(resource.mimeType, 'text/html;profile=mcp-app');
   assert.deepEqual(resource._meta.ui.csp.connectDomains, []);
