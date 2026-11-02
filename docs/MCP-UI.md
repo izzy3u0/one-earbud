@@ -7,7 +7,7 @@
 ## 怎么打开
 
 1. 等 Render 上这次 main 更新显示 **Live**。服务仍是 Free，无新增环境变量，不需要更换两个口令。
-2. 在 ChatGPT 的插件/应用详情页刷新工具信息，让它重新读取 app 专用工具和 `player-v2.4.html`。使用同一个 `/mcp` 地址与现有 OAuth，不需要更换口令。随后在新对话打开新卡片；旧卡片不会自动换脚本。
+2. 在 ChatGPT 的插件/应用详情页刷新工具信息，让它重新读取 app 专用工具和 `player-v2.5.html`。使用同一个 `/mcp` 地址与现有 OAuth，不需要更换口令。随后在新对话打开新卡片；旧卡片不会自动换脚本。
 3. 刷新或彻底重开手机 PWA，让手机收到新增控件逻辑。首次使用先在 PWA 手动播一首。
 4. 在新对话选择 **[Ash×Izzy] 分你一只耳机**，说“打开 Ash × Izzy 音乐卡片”或“用卡片显示我现在听的歌”。
 
@@ -47,6 +47,7 @@ V2.4 将“同一卡片恢复”和“换播放端”分开。首次在新的 v2
 - V2.2 不再仅因滚动离屏、IntersectionObserver 或 document.hidden 主动暂停音频；只要宿主仍运行卡片与桥接，播放中的心跳和工具轮询继续。关闭/销毁时仍停声并尽力发送释放请求，不绕过宿主 teardown。bfcache 的临时 pagehide 保存进度，pageshow 后校验服务端播放权。
 - 如果宿主实际暂停了音频，状态会如实上报 paused，同时保留播放意图。回到卡片后先从服务端确认仍持有播放权，再尝试从原位置恢复；在卡片按暂停不会自动恢复。iOS 拒绝恢复时仍需点播放，不循环尝试或绕过手势限制。
 - V2.3 的文字、按钮图标、无障碍标签与点击动作共用一份播放状态判定：当前卡片持有有效音频时读真实 `audio.paused/ended`；其余情况读服务端新鲜状态。`playbackIntent` 与保存的 `actualPlaying` 快照不作为正在播放的证明。聊天返回、visibility/focus/pageshow、宿主 globals 与重新可见时先同步重绘，再异步刷新。新 UI 实例看到另一个仍在播放的卡片时也显示暂停图标；点暂停沿用现有 `music_player_control` 通道，不隐式申请新播放权或执行 handoff。明确播放/接管仍走原有用户操作流程。
+- V2.5 将底部提示也纳入同一次状态渲染：初始化只显示中性的连接提示，恢复后按服务端当前播放端和同一份实际播放判定显示文案。ChatGPT 正在播放时不再残留 PWA 首次播放提示；短期操作反馈限定在当前 stream/epoch/mode，准备播放、自动播放限制及媒体错误提示在成功播放后移除。真正的停声超时、连接错误仍保留相应提示，不修改播放权、音频或 PWA 流程。
 - 支持时使用官方 `window.openai.setWidgetState` / `widgetState` 保存当前 songId、进度及播放意图（约每 5 秒，另在播放/暂停/seek/visibility/销毁时保存）。V2.4 另外保存 `playbackClient.sourceId`，它只标识同一张卡片，不是登录凭据。只存 UI 元数据，不存登录态、口令、sessionId 或音频能力 URL。歌曲快照标为“上次播放位置 · 非实况”，不能代替服务端实际状态。未提供该扩展的宿主继续依赖原有服务端状态与释放请求，不新增 localStorage 音乐状态源。
 - 如果客户端直接杀掉页面，释放请求可能无法送达。新卡片仍可手动选择 ChatGPT，等待确认或上述超时准备，不会无限卡住；新页面打开本身不代表旧端已停声。服务重启后临时会话会重置，但登录持久化不受影响。
 - ChatGPT 客户端是否允许 iframe 媒体、是否保留离屏页面及后台运行由平台决定；不保证系统挂起、卸载、锁屏或关闭对话后续播。
@@ -79,7 +80,7 @@ ChatGPT 决定是否渲染 UI、是否允许按钮调用工具、是否要求确
 
 按照当前 [OpenAI UI 文档](https://developers.openai.com/plugins/build/chatgpt-ui) 和 [quickstart](https://developers.openai.com/plugins/build/app-quickstart) 使用 MCP Apps：
 
-- `music_open_player` 关联 `_meta.ui.resourceUri = ui://one-earbud/player-v2.4.html`，资源 MIME 为 `text/html;profile=mcp-app`。同时提供 ChatGPT 的 `openai/outputTemplate` 兼容别名。旧 `player-v2.html`、`player-v2.1.html`、`player-v2.2.html`、`player-v2.3.html` 地址仍可读取修复后的模板。
+- `music_open_player` 关联 `_meta.ui.resourceUri = ui://one-earbud/player-v2.5.html`，资源 MIME 为 `text/html;profile=mcp-app`。同时提供 ChatGPT 的 `openai/outputTemplate` 兼容别名。旧 `player-v2.html`、`player-v2.1.html`、`player-v2.2.html`、`player-v2.3.html`、`player-v2.4.html` 地址仍可读取修复后的模板。
 - 旧 `player-v1.html` 资源仍保留原 PWA 遥控脚本，避免已有连接缓存旧工具描述时找不到资源；它不获得 V2 音频能力。要使用 V2，刷新工具信息并打开新卡片。
 - 组件用标准 `ui/initialize`、`ui/notifications/tool-result`、`tools/call`、尺寸变更通知和 `ui/resource-teardown` 桥接；以 `window.parent` 校验消息来源。初始化声明只支持 inline；通过 ResizeObserver 上报卡片尺寸。优先标准桥接，旧宿主有 `window.openai.callTool` 时可降级兼容。
 - `music_player_state` 为只读、仅供 app 的刷新工具；视图适配层调用原有 `music_now_playing` 业务处理器、authority/queue 和缓存歌词，不重写网易云接口或 freshness 规则。
@@ -97,6 +98,8 @@ HTML/CSS/JS 都在 `server/ui/player.html`，无需 CDN、前端构建、额外�
 运行 `npm test`。新增测试覆盖资源发现/读取、MIME/metadata、OAuth 下的资源访问、实况过期、CSP/封面过滤、控件幂等和旧歌保护、MCP → HTTP → 模拟手机音频、桥接初始化/按钮/重试、隐藏/长期刷新、宿主降级和安全文本渲染。
 
 自动测试使用模拟网易云和音频，不等于真实 iPhone 或每种 ChatGPT 客户端验收。部署后按上面的步骤刷新连接，打开卡片并验证暂停/继续和前后切歌；状态应随手机真实心跳变化。
+
+V2.5 回归覆盖同一卡片恢复、仍在播放的旧实例由新 UI 观察、visibility/focus/pageshow/globals 重绘、两种模式文案切换、旧 PWA 操作反馈失效，以及媒体错误/超时提示在真正播放后清除。iPhone 验收时切到其他聊天再返回，不刷新：确认底部也显示 ChatGPT 文案，与声音、暂停按钮、歌词一致。
 
 V2.4 增加真实组件脚本的“旧实例播放 → 新实例用宿主快照自动恢复 → 无刷新直接显示 → 旧实例关闭后自动续接”测试，以及通过 MCP SDK/HTTP 的并发恢复、旧实例迟到写入、用户暂停意图优先测试。可用 `ONE_EARBUD_RESUME_STABILITY_MS=65000` 运行 `wall-clock remounted` 持续测试。iPhone 验收：在新 v2.4 卡片首播后，切换别的聊天再返回；不刷新、不重选播放端，确认没有停声倒计时，歌曲/进度/歌词/按钮直接同步。
 

@@ -18,6 +18,7 @@ function fixture(options = {}) {
     set src(value) { this.attrs.src = value; }
   }
   const elements = Object.fromEntries([...html.matchAll(/\bid="([^"]+)"/g)].map(x => [x[1], new Target()]));
+  elements.notice.textContent = /<p id="notice"[^>]*>([^<]*)<\/p>/.exec(html)[1];
   elements.auto.checked = true;
   const window = new Target(), document = new Target(), sent = [], timers = new Map(), intervals = new Map();
   let now = 1800000000000, timerId = 0, toolHandler=null;
@@ -164,6 +165,8 @@ test('V2 single pink seek stays synchronized; hidden/offscreen playback continue
     audio.readyState=1;await audio.emit('loadedmetadata');await settle();assert.equal(audio.paused,true);
     await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);assert.equal(audio.playCalls,1);assert.equal(authority.nowPlaying().state,'playing');assert.equal(authority.nowPlaying().playbackMode,'chatgpt');
     assert.equal(f.elements.status.textContent,'ChatGPT正在播放');assert.equal(f.elements['current-line'].textContent,'Test lyric');
+    assert.match(f.elements.notice.textContent,/声音来自 ChatGPT/);
+    assert.doesNotMatch(f.elements.notice.textContent,/首次播放请先在手机|卡片不会另开/);
     assert.equal(f.elements['pause-icon'].hidden,false);assert.equal(f.elements['play-icon'].hidden,true);
     // The actual owned audio must win over a delayed paused server snapshot.
     await f.message({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{structuredContent:{...await view(),state:'paused'}}});
@@ -174,7 +177,7 @@ test('V2 single pink seek stays synchronized; hidden/offscreen playback continue
     f.document.hidden=false;const returning=f.document.emit('visibilitychange');
     assert.equal(audio.paused,false);assert.equal(f.elements['pause-icon'].hidden,false,'return must resample audio before an RPC reply');assert.equal(f.elements['play-icon'].hidden,true);assert.equal(f.elements.toggle.getAttribute('aria-label'),'暂停 ChatGPT 播放');
     assert.equal(f.elements.position.textContent,'0:12');await returning;f.intersect(true);await settle();
-    for(const event of ['focus','pageshow','openai:set_globals']){f.elements['pause-icon'].hidden=true;await f.window.emit(event);assert.equal(f.elements['pause-icon'].hidden,false);await settle();}
+    for(const event of ['focus','pageshow','openai:set_globals']){f.elements['pause-icon'].hidden=true;f.elements.notice.textContent='首次播放请先在手机 PWA 点播放。卡片不会另开一份音频。';await f.window.emit(event);assert.equal(f.elements['pause-icon'].hidden,false);assert.match(f.elements.notice.textContent,/声音来自 ChatGPT/);await settle();}
     // A remounted observer must control the still-running owner, not start handoff.
     const observer=fixture({audio:true,idPrefix:'observing-other-chat-'}),control=require('../music/player-controls').createPlayerControls({authority});
     try {
@@ -208,6 +211,10 @@ test('V2 single pink seek stays synchronized; hidden/offscreen playback continue
     audio.readyState=1;await audio.emit('loadedmetadata');await settle();
     assert.equal(authority.nowPlaying().songId,'2');assert.equal(audio.paused,true,'paused skips only prepare the next track');
     await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);
+    await audio.emit('error');await settle();assert.equal(audio.paused,true);
+    assert.match(f.elements.notice.textContent,/无法在 ChatGPT 加载音频/);
+    const refocus=f.window.emit('focus');assert.match(f.elements.notice.textContent,/无法在 ChatGPT 加载音频/,'a synchronous repaint must preserve an actionable current error');await refocus;await settle();
+    if(audio.paused){await f.elements.toggle.emit('click');await settle();}assert.equal(audio.paused,false);assert.match(f.elements.notice.textContent,/声音来自 ChatGPT/,'successful playback replaces a stale play/error prompt');
     audio.currentTime=37;await audio.emit('seeked');await settle();
     f.intersect(false);f.document.hidden=true;audio.pause();await settle();
     const owner=authority.playbackOwner(),last=f.sent.filter(x=>x.params?.name==='music_widget_playback'&&x.params.arguments.op==='report').at(-1).params.arguments;
@@ -280,8 +287,37 @@ test('actual card retains handoff song and progress past heartbeat expiry, then 
     const audio=f.elements['local-audio'];assert.match(audio.src,/\/widget-media\//);audio.readyState=1;await audio.emit('loadedmetadata');await settle();
     assert.equal(audio.currentTime,101);assert.equal(audio.playCalls,0);assert.equal(f.elements.toggle.disabled,false);assert.match(f.elements.notice.textContent,/已超时收回播放权/);
     await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);assert.equal(authority.nowPlaying().state,'playing');assert.equal(f.elements.title.textContent,song.title);
+    assert.match(f.elements.notice.textContent,/声音来自 ChatGPT/);assert.doesNotMatch(f.elements.notice.textContent,/已超时|先点播放/);
     assert.equal(authority.reportNowPlaying({...phone,sequence:999,...song,positionMs:0,playing:false}),false);assert.equal(authority.nowPlaying().state,'playing');
   } finally {await f.close();}
+});
+
+test('footer hydration follows authoritative mode, clears old mode feedback, and never treats a saved intent as live audio',async()=>{
+  const f=fixture({widgetState:{privateContent:{playback:{version:1,song:{songId:'123',title:'Saved ChatGPT song'},positionMs:10000,playbackIntent:true,actualPlaying:true}}}});
+  let playback={mode:'pwa',epoch:1,streamId:'footer-stream',sourceId:'phone-live',ownerSourceId:'phone-live',handoff:null};
+  let state='paused',revision=1;
+  const snapshot=()=>f.snapshot({streamId:playback.streamId,revision,playback,state});
+  const notify=()=>f.message({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{structuredContent:snapshot()}});
+  try {
+    assert.doesNotMatch(f.elements.notice.textContent,/PWA/,'unhydrated HTML must not assert a playback mode');
+    await f.initialize();
+    f.serveTools(async name=>name==='music_player_state'?{structuredContent:snapshot()}:name==='music_player_control'?{structuredContent:{ok:true,message:'等待手机同步'}}:{structuredContent:{ok:true,playback}});
+    await f.respond(f.last(),{structuredContent:snapshot()});
+    assert.match(f.elements.notice.textContent,/请先在手机 PWA 点播放/,'fresh PWA authority wins over a saved ChatGPT checkpoint');
+    await f.elements.toggle.emit('click');await flush();assert.equal(f.elements.notice.textContent,'等待手机同步');
+    playback={...playback,mode:'chatgpt',epoch:2,sourceId:'widget-live',ownerSourceId:'widget-live'};state='playing';revision++;await notify();
+    assert.match(f.elements.notice.textContent,/声音来自 ChatGPT/,'old PWA operation feedback cannot survive a mode change');
+    assert.equal(f.elements['pause-icon'].hidden,false);assert.equal(f.elements['playback-mode'].value,'chatgpt');
+    for(const event of ['focus','pageshow','openai:set_globals']){f.elements.notice.textContent='首次播放请先在手机 PWA 点播放。卡片不会另开一份音频。';await f.window.emit(event);assert.match(f.elements.notice.textContent,/声音来自 ChatGPT/);await flush();}
+    await f.elements.refresh.emit('click');await flush();assert.match(f.elements.notice.textContent,/声音来自 ChatGPT/,'manual refresh has no PWA-only reading prompt');
+    state='paused';revision++;await notify();assert.match(f.elements.notice.textContent,/ChatGPT 已暂停/);
+    const stale={...snapshot(),fresh:false,current:null,prepared:null,revision:++revision};
+    await f.message({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{structuredContent:stale}});
+    assert.match(f.elements.notice.textContent,/正在恢复 ChatGPT/);assert.doesNotMatch(f.elements.artist.textContent,/PWA/);assert.doesNotMatch(f.elements['current-line'].textContent,/手机/);
+    assert.equal(f.elements['pause-icon'].hidden,true,'saved actualPlaying=true cannot force playing copy');
+    playback={...playback,mode:'pwa',epoch:3,sourceId:'phone-live',ownerSourceId:'phone-live'};state='playing';revision++;await notify();
+    assert.match(f.elements.notice.textContent,/声音来自手机 PWA/);assert.doesNotMatch(f.elements.notice.textContent,/声音来自 ChatGPT/);
+  }finally{await f.close();}
 });
 
 test('real widget remount automatically restores its stable card, never switches, and resumes released audio at the latest position',async t=>{
@@ -304,6 +340,8 @@ test('real widget remount automatically restores its stable card, never switches
     restored=fixture({audio:true,idPrefix:'restored-mount-',widgetState:saved});await restored.initialize();restored.serveTools(handle);await restored.respond(restored.last(),{structuredContent:await view()});await settle();
     assert.equal(restored.savedStates.at(-1).privateContent.playbackClient.sourceId,sourceId);
     assert.equal(original.paused,false);assert.equal(restored.elements['local-audio'].playCalls,0);assert.equal(restored.elements.status.textContent,'ChatGPT正在播放');assert.equal(restored.elements['mode-status'].textContent,'此卡片播放');assert.equal(restored.elements['pause-icon'].hidden,false);assert.equal(restored.elements['current-line'].textContent,'Continuous lyric');
+    assert.match(restored.elements.notice.textContent,/声音来自 ChatGPT/,'remount derives the footer from the same live state as the pause icon');
+    assert.doesNotMatch(restored.elements.notice.textContent,/首次播放请先在手机|卡片不会另开/);
     for(let i=0;i<10;i++){original.currentTime=43+i;await original.emit('seeked');await settle();restored.tick(5000);await settle();assert.equal(authority.playbackOwner().epoch,owner.epoch);assert.equal(authority.playbackOwner().handoff,null);assert.equal(original.paused,false);}
     restored.elements['playback-mode'].value='chatgpt';await restored.elements['playback-mode'].emit('change');await settle();
     assert.equal(restored.sent.filter(x=>x.params?.name==='music_widget_playback'&&['switch','claim'].includes(x.params.arguments.op)).length,0,'restoration and repeated select do not request a handoff');

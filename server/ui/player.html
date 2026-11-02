@@ -27,11 +27,11 @@
 </head>
 <body>
   <main class="card" aria-label="Ash × Izzy 音乐播放器">
-    <header><div class="brand">Ash × Izzy<span id="source-label">分你一只耳机 · 声音来自 PWA</span></div><button id="refresh" class="refresh" type="button" aria-label="刷新播放状态" disabled>刷新 ↻</button></header>
+    <header><div class="brand">Ash × Izzy<span id="source-label">分你一只耳机</span></div><button id="refresh" class="refresh" type="button" aria-label="刷新播放状态" disabled>刷新 ↻</button></header>
     <div class="playback-choice"><label for="playback-mode">播放端</label><select id="playback-mode" disabled><option value="pwa">手机 PWA</option><option value="chatgpt">ChatGPT</option></select><span id="mode-status">稳定模式 · 手机 PWA</span></div>
     <section class="track" aria-label="歌曲信息">
       <div class="cover"><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><circle cx="20" cy="20" r="16"/><circle cx="20" cy="20" r="5"/><path d="M9 20a11 11 0 0 1 11-11"/></svg><img id="cover" alt="专辑封面" referrerpolicy="no-referrer" hidden></div>
-      <div><h1 id="title">分你一只耳机</h1><p id="artist" class="artist">正在连接手机播放器…</p><div class="status"><span class="dot" aria-hidden="true"></span><span id="status">等待实况</span></div></div>
+      <div><h1 id="title">分你一只耳机</h1><p id="artist" class="artist">正在连接播放器…</p><div class="status"><span class="dot" aria-hidden="true"></span><span id="status">等待实况</span></div></div>
     </section>
     <section class="lyrics" aria-label="附近歌词"><p id="previous-line" class="lyric"></p><p id="current-line" class="lyric current">让音乐陪我们待一会儿</p><p id="translation" class="lyric translation"></p><p id="next-line" class="lyric"></p></section>
     <progress id="progress" max="100" value="0" aria-label="播放进度"></progress><input id="seek" type="range" min="0" max="1000" value="0" aria-label="调整 ChatGPT 播放进度" hidden><div class="times"><span id="position">—:—</span><span id="duration">—:—</span></div>
@@ -40,7 +40,7 @@
       <button id="toggle" class="toggle" type="button" aria-label="播放" disabled><span id="play-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 4 12 8-12 8z"/></svg></span><span id="pause-icon" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg></span></button>
       <button id="next" type="button" aria-label="下一首" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5h2v14h-2zM5 5l11 7-11 7z"/></svg></button>
     </nav>
-    <footer class="footer"><div class="footer-row"><span id="updated">尚未刷新</span><label class="auto"><input id="auto" type="checkbox" checked>自动刷新</label></div><p id="notice" class="notice" role="status" aria-live="polite">首次播放请先在手机 PWA 点播放。卡片不会另开一份音频。</p></footer>
+    <footer class="footer"><div class="footer-row"><span id="updated">尚未刷新</span><label class="auto"><input id="auto" type="checkbox" checked>自动刷新</label></div><p id="notice" class="notice" role="status" aria-live="polite">正在连接播放器…</p></footer>
   </main>
   <audio id="local-audio" preload="metadata" playsinline></audio>
   <script>
@@ -64,6 +64,7 @@
     let reportPending=null,reportFlight=null,widgetPolling=false,lastAudioReport=0,lastAudioAck=0;
     let mayAcquire=false,claimRequest=null,ownerGeneration=0,playbackIntent=false,resumeOnVisible=false,seekDragging=false,lastCheckpoint=0;
     let checkpoint=null;
+    let notice=null;
     function hydrateIdentity() {
       try {
         const saved=window.openai?.widgetState?.privateContent,client=saved?.playbackClient;
@@ -104,11 +105,11 @@
       reportFlight=(async()=>{
         while(reportPending && !stopped){const body=reportPending;reportPending=null;const result=await audioTool(body);
           if(body.sessionId!==localLease?.sessionId)continue;
-          if(!result.structuredContent?.accepted){++ownerGeneration;stopAudio();localLease=null;mayAcquire=false;el.notice.textContent='播放权已交给另一端，请刷新后选择播放端。';break;}
+          if(!result.structuredContent?.accepted){++ownerGeneration;stopAudio();localLease=null;mayAcquire=false;showNotice('播放权已交给另一端，请刷新后选择播放端。');break;}
           lastAudioAck=Date.now();
           if(view?.playback?.handoff){stopAudio();Promise.resolve().then(()=>pollAudio());}
         }
-      })().catch(()=>{el.notice.textContent='播放状态暂未同步；请检查连接，或切回手机 PWA。';}).finally(()=>{reportFlight=null;if(reportPending&&!stopped)flushAudioReport();});return reportFlight;
+      })().catch(()=>{showNotice('播放状态暂未同步；请检查连接，或切回手机 PWA。');}).finally(()=>{reportFlight=null;if(reportPending&&!stopped)flushAudioReport();});return reportFlight;
     }
     async function acknowledge(owner) {
       if(!localLease || owner.ownerSourceId!==sourceId)return;
@@ -129,7 +130,7 @@
       localSequence=Math.max(localSequence,Number(lease.sequence)||0);mayAcquire=false;
       if(!audio)return;
       if(localTrack?.trackId===audio.trackId){if(localTrack.url===audio.url)return;audio={...audio,positionMs:Math.round((localAudio.currentTime||0)*1000),playing:!localAudio.paused};}
-      const url=safeAudio(audio.url);if(!url){el.notice.textContent='此客户端未能加载安全音频地址，请使用手机 PWA。';return;}
+      const url=safeAudio(audio.url);if(!url){showNotice('此客户端未能加载安全音频地址，请使用手机 PWA。');return;}
       stopAudio();localTrack=audio;localReady=false;localChanging=true;localAudio.src=url;localChanging=false;
       lastAudioAck=Date.now();
       if(localAudio.readyState>=1)audioReady();
@@ -139,14 +140,14 @@
       try {localAudio.currentTime=Math.max(0,Math.min(Number.isFinite(localAudio.duration)?localAudio.duration:Infinity,(localTrack.positionMs||0)/1000));}catch(_){return;}
       localReady=true;remember(true);
       if(localTrack.playing && localPlayed)playLocal();
-      else {el.notice.textContent=view?.playback?.resume?.reason==='timeout'?'旧端未确认，已超时收回播放权。若旧端仍有声音，请先暂停它；再点播放从保留位置继续。':'音频已准备好，点播放从当前位置继续；声音将来自 ChatGPT。';reportAudio();}
+      else {if(view?.playback?.resume?.reason==='timeout')showNotice('旧端未确认，已超时收回播放权。若旧端仍有声音，请先暂停它；再点播放从保留位置继续。',{untilPlaying:true,ttlMs:Infinity});reportAudio();}
       render();
     }
     function playLocal() {
       if(!localOwner() || !localReady)return;
       playbackIntent=true;
       const generation=localGeneration;
-      localAudio.play().catch(()=>{if(generation!==localGeneration)return;el.notice.textContent='客户端限制了自动播放，请再点一次播放；也可切回手机 PWA。';reportAudio();render();});
+      localAudio.play().catch(()=>{if(generation!==localGeneration)return;showNotice('客户端限制了自动播放，请再点一次播放；也可切回手机 PWA。',{untilPlaying:true,ttlMs:Infinity});reportAudio();render();});
     }
     async function advance(direction,id) {
       if(!localOwner() || !localTrack || localChanging)return;
@@ -159,7 +160,7 @@
         if(generation!==ownerGeneration)return;
         applyAudio(result._meta?.audio,result._meta?.lease);
         if(!result._meta?.audio)await pollAudio();
-      }catch(_){el.notice.textContent='换歌未完成，请刷新或切回手机 PWA。';}
+      }catch(_){showNotice('换歌未完成，请刷新或切回手机 PWA。');}
       finally{localChanging=false;render();}
     }
     async function pollAudio() {
@@ -169,21 +170,21 @@
       try {
         const result=await audioTool(localLease?{op:'poll',...localLease}:mayAcquire?{op:'claim',requestId:claimRequest,expectedEpoch:view.playback.epoch,expectedStreamId:view.playback.streamId}:view.playback.mode==='chatgpt'&&view.playback.sourceId===sourceId?{op:'resume',expectedEpoch:view.playback.epoch,expectedStreamId:view.playback.streamId,playing:checkpoint?.playbackIntent===true}:{op:'poll'}),owner=result.structuredContent.playback;
         if(result.structuredContent.attachmentLost){stopAudio();localLease=null;mayAcquire=false;return;}
-        if(owner.handoff){await acknowledge(owner);el.notice.textContent='正在等待旧端停声，最长 12 秒；歌曲和进度已保留。';return;}
+        if(owner.handoff){await acknowledge(owner);return;}
         if(owner.mode!=='chatgpt'||owner.sourceId!==sourceId){if(localLease)stopAudio();localLease=null;return;}
         if(generation!==ownerGeneration)return;
         if(result._meta?.restored && result._meta?.audio?.playing===true){localPlayed=true;playbackIntent=true;}
         applyAudio(result._meta?.audio,result._meta?.lease);
-        if(result.structuredContent.audioError)el.notice.textContent=result.structuredContent.audioError;
+        if(result.structuredContent.audioError)showNotice(result.structuredContent.audioError);
         const command=result._meta?.command;
         if(command && localTrack?.song.songId===command.songId && !handledCommands.has(command.id)){
           handledCommands.add(command.id);
           if(command.action==='pause'){playbackIntent=false;resumeOnVisible=false;localAudio.pause();remember(true);}
-          else if(command.action==='resume'){if(localPlayed)playLocal();else el.notice.textContent='请先在这张卡片点播放。';}
+          else if(command.action==='resume'){if(localPlayed)playLocal();else showNotice('请先在这张卡片点播放。',{untilPlaying:true});}
           else await advance(command.action,command.id);
         }
         if(resumeOnVisible && playbackIntent && result._meta?.lease?.sessionId===localLease?.sessionId && result._meta?.audio?.trackId===localTrack?.trackId && localOwner() && localReady && localAudio.paused && !document.hidden && onscreen){resumeOnVisible=false;playLocal();}
-      }catch(_){el.notice.textContent='ChatGPT 音频暂时不可用，可重试或切回手机 PWA。';}
+      }catch(_){showNotice('ChatGPT 音频暂时不可用，可重试或切回手机 PWA。');}
       finally{widgetPolling=false;render();}
     }
     async function switchPlayback(target) {
@@ -195,13 +196,13 @@
       const owner=view.playback, releasing=localOwner(), positionMs=Math.round((localAudio.currentTime||0)*1000),playing=!localAudio.paused&&!localAudio.ended;
       mayAcquire=target==='chatgpt';claimRequest=requestId();
       stopAudio();
-      render();el.notice.textContent='正在切换，先等待旧播放端停声…';
+      render();showNotice('正在切换，先等待旧播放端停声…',{untilPlaying:true});
       try {
         await audioTool({op:'switch',target,requestId:requestId(),expectedEpoch:owner.epoch,expectedStreamId:owner.streamId,...(releasing?{...localLease,sequence:++localSequence,...(localTrack?{songId:localTrack.song.songId,title:localTrack.song.title,artist:localTrack.song.artist,durationMs:localTrack.song.durationMs,playing,positionMs}:{})}:{})});
         if(releasing){localLease=null;localTrack=null;localReady=false;localAudio.removeAttribute('src');}
         await pollAudio();await refresh();
-        if(target==='pwa'&&!view.playback.handoff)el.notice.textContent='已交给手机 PWA；若手机没有播放会话，请在手机点播放。';
-      }catch(_){reportAudio();el.notice.textContent='切换暂未完成，请刷新；等待超过 12 秒后会收回旧端播放权并准备音频。';}
+        if(target==='pwa'&&view.playback.mode==='pwa'&&!view.playback.handoff)showNotice('已交给手机 PWA；若手机没有播放会话，请在手机点播放。',{untilPlaying:true});
+      }catch(_){reportAudio();showNotice('切换暂未完成，请刷新；等待超过 12 秒后会收回旧端播放权并准备音频。');}
       finally{busy=false;render();}
     }
     localAudio.addEventListener('loadedmetadata',audioReady);
@@ -210,7 +211,7 @@
     localAudio.addEventListener('seeked',()=>{remember(true);reportAudio();render();});
     localAudio.addEventListener('timeupdate',()=>{if(localOwner()){remember();render();}});
     localAudio.addEventListener('ended',()=>{if(localOwner()&&!localChanging){reportAudio();advance('ended');}});
-    localAudio.addEventListener('error',()=>{if(localTrack){localAudio.pause();el.notice.textContent='这首无法在 ChatGPT 加载音频，请重试或切回手机 PWA。';reportAudio();render();}});
+    localAudio.addEventListener('error',()=>{if(localTrack){localAudio.pause();showNotice('这首无法在 ChatGPT 加载音频，请重试或切回手机 PWA。',{untilPlaying:true,ttlMs:Infinity});reportAudio();render();}});
     function notify(method, params) { window.parent.postMessage({ jsonrpc:'2.0', method, params }, hostOrigin); }
     function request(method, params) {
       return new Promise((resolve, reject) => {
@@ -260,7 +261,7 @@
     async function connect() {
       if (window.parent === window) throw new Error('no_host');
       try {
-        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'2.4.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
+        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'2.5.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
         theme(result?.hostContext);
         notify('ui/notifications/initialized', {});
       } catch (error) {
@@ -289,18 +290,36 @@
       const state=local?(!localAudio.paused&&!localAudio.ended?'playing':'paused'):current?view.state:'unknown';
       return {local,current,state,playing:current&&state==='playing'};
     }
+    function noticeScope() { return [view?.streamId,view?.playback?.epoch,view?.playback?.mode].join(':'); }
+    function showNotice(message,{untilPlaying=false,ttlMs=30000}={}) {
+      // Transient feedback belongs to this playback selection, not to the DOM.
+      notice={message,scope:noticeScope(),untilPlaying,expiresAt:Date.now()+ttlMs};
+      renderNotice(playbackStatus());
+    }
+    function renderNotice(status) {
+      if(notice&&(notice.scope!==noticeScope()||Date.now()>=notice.expiresAt||(notice.untilPlaying&&status.playing)))notice=null;
+      let message;
+      if(notice)message=notice.message;
+      else if(!connected||!view)message='正在连接播放器…';
+      else if(view.playback?.handoff)message='正在等待旧端停声，最长 12 秒；歌曲和进度已保留。';
+      else if(view.playback?.mode==='chatgpt') {
+        message=status.playing?'声音来自 ChatGPT；可在卡片中暂停播放。':status.local?'ChatGPT 音频已准备好，点播放从当前位置继续。':status.current?'ChatGPT 已暂停，可点播放继续。':'正在恢复 ChatGPT 歌曲和进度；如未恢复，可点刷新重试。';
+      } else message=status.playing?'声音来自手机 PWA；卡片负责遥控与显示实况。':'首次播放或媒体受限时，请先在手机 PWA 点播放；卡片负责遥控。';
+      if(!notice&&connected&&view&&!view.playback?.handoff&&!el.auto.checked)message+=' 自动刷新已暂停。点刷新即可继续。';
+      if(el.notice.textContent!==message)el.notice.textContent=message;
+    }
     function render() {
       const status=playbackStatus(), {local,current}=status, chat=view?.playback?.mode==='chatgpt';
       const saved=view?.playback?.handoff?.snapshot, prepared=!!saved || (!fresh()&&!!view?.playback?.resume?.songId);
       const recovered=!local&&!saved&&!fresh()&&!view?.prepared&&view?.playback?.mode==='chatgpt'?checkpoint:null;
       const song = local ? localTrack.song : saved ? (view?.prepared || saved) : current ? view.current : view?.prepared || recovered?.song;
       const playbackState=status.state;
-      el['source-label'].textContent='分你一只耳机 · 声音来自 '+(chat?'ChatGPT':'PWA');
+      el['source-label'].textContent='分你一只耳机'+(view?' · 声音来自 '+(chat?'ChatGPT':'PWA'):'');
       el['playback-mode'].value=view?.playback?.handoff?.target||(chat?'chatgpt':'pwa');el['playback-mode'].disabled=!connected||busy||!view?.playback;
       const remaining=Math.max(0,Math.ceil(((view?.playback?.handoff?.deadlineAt||Date.now())-Date.now())/1000));
       el['mode-status'].textContent=view?.playback?.handoff?'等待停声 · '+remaining+' 秒':chat?(localOwner()||(view.playback.sourceId===sourceId&&current)?'此卡片播放':status.playing?'当前播放端正在播放':'点播放接到此卡片'):'稳定模式 · 手机 PWA';
-      el.title.textContent = song?.title || (view ? '此刻没有手机实况' : '分你一只耳机');
-      el.artist.textContent = song?.artist || (view ? '打开 PWA，让这只耳机重新连上' : '正在连接手机播放器…');
+      el.title.textContent = song?.title || (view ? chat?'正在恢复 ChatGPT 歌曲':'此刻没有手机实况' : '分你一只耳机');
+      el.artist.textContent = song?.artist || (view ? chat?'正在恢复 ChatGPT 播放端…':'打开 PWA，让这只耳机重新连上' : '正在连接播放器…');
       el.status.textContent = view?.playback?.handoff ? '切换中 · 已保留歌曲和进度' : current ? (chat?'ChatGPT':'手机')+(playbackState==='playing'?'正在播放':'已暂停') : recovered?'上次播放位置 · 非实况':song ? (prepared?'交接歌曲已准备 · 非实况':'队列中待播放 · 非实况') : chat?'ChatGPT 播放端未更新':'手机状态未更新';
       const cover = safeCover(song?.coverUrl);
       if (cover && el.cover.getAttribute('src') !== cover) { el.cover.src = cover; el.cover.hidden = false; }
@@ -308,7 +327,7 @@
       let context = current ? view?.lyricContext : null;
       if(local){const lines=localTrack.lyrics||[],at=(localAudio.currentTime||0)*1000+300;let k=-1;for(let i=0;i<lines.length;i++)if(lines[i].timeMs<=at)k=i;context={previous:lines[k-1],current:lines[k],next:lines[k+1]};}
       el['previous-line'].textContent = context?.previous?.text || '';
-      el['current-line'].textContent = context?.current?.text || (current ? '前奏或暂无歌词' : '等手机回报新的播放状态');
+      el['current-line'].textContent = context?.current?.text || (current ? '前奏或暂无歌词' : chat?'等待 ChatGPT 播放端更新':'等手机回报新的播放状态');
       el.translation.textContent = context?.current?.trans || '';
       el['next-line'].textContent = context?.next?.text || '';
       const duration = current || prepared || recovered ? Number(song?.durationMs) || 0 : 0;
@@ -327,13 +346,14 @@
       el.toggle.setAttribute('aria-label', chat?(playing?'暂停 ChatGPT 播放':'在此卡片播放'):playing ? '暂停手机播放' : '继续手机播放');
       const age = Number.isFinite(view?.observedAt) ? Math.max(0, view.sampledAt - view.observedAt) + Date.now() - receivedAt : Date.now() - receivedAt;
       el.updated.textContent = local?'ChatGPT 正在同步实况':view ? (chat?'播放端':'手机')+'状态更新于 ' + Math.max(0, Math.floor(age / 1000)) + ' 秒前' : '尚未刷新';
+      renderNotice(status);
     }
     async function refresh(manual = false) {
       if (stopped || reading || !connected) return;
-      if (manual) { activeUntil = Date.now() + 300000; el.notice.textContent = '正在读取手机实况…'; }
+      if (manual) { activeUntil = Date.now() + 300000; notice=null; }
       reading = true; lastPoll = Date.now(); render();
-      try { accept(await callTool('music_player_state', {})); await pollAudio(); if (manual && view?.playback?.mode!=='chatgpt') el.notice.textContent = '状态来自手机心跳；首次播放或媒体受限时请在 PWA 点播放。'; }
-      catch (_) { el.notice.textContent = '刷新未完成。免费服务可能正在唤醒；稍后点刷新，或重新连接应用。'; }
+      try { accept(await callTool('music_player_state', {})); await pollAudio(); }
+      catch (_) { showNotice('刷新未完成。免费服务可能正在唤醒；稍后点刷新，或重新连接应用。'); }
       finally { reading = false; render(); }
     }
     async function control(action) {
@@ -356,12 +376,12 @@
       const expectedSongId = view.current.songId;
       const args = failedControl?.action === action && failedControl?.expectedSongId === expectedSongId ? failedControl : { action, expectedSongId, requestId:window.crypto?.randomUUID?.() || 'ui-' + Date.now() + '-' + Math.random().toString(36).slice(2) };
       failedControl = args; busy = true; activeUntil = Date.now() + 300000; render();
-      el.notice.textContent = '正在发送指令…';
+      showNotice('正在发送指令…');
       try {
         const result = await callTool('music_player_control', args);
         failedControl = null;
-        el.notice.textContent = result.structuredContent?.message || '指令已发送，等待手机回报。';
-      } catch (error) { el.notice.textContent = error.message === 'bridge_timeout' || error.message === 'bridge_error' ? '指令尚未确认。点同一按钮会复用请求标识；请先检查手机。' : error.message; }
+        showNotice(view.playback?.mode==='chatgpt'?'指令已发送，等待 ChatGPT 播放端回报。':result.structuredContent?.message || '指令已发送，等待手机回报。');
+      } catch (error) { showNotice(error.message === 'bridge_timeout' || error.message === 'bridge_error' ? '指令尚未确认。点同一按钮会复用请求标识；请先检查当前播放端。' : error.message); }
       finally { busy = false; render(); await refresh(); }
     }
     el.refresh.addEventListener('click', () => refresh(true));
@@ -424,15 +444,15 @@
     window.addEventListener('pagehide', event => {remember(true);if(!event.persisted)cleanup();});
     window.addEventListener('pageshow',restorePresentation);
     timers.push(setInterval(() => {
-      if(localOwner() && !localChanging){if(Date.now()-lastAudioAck>20000&&!localAudio.paused){resumeOnVisible=playbackIntent;localAudio.pause();el.notice.textContent='状态同步中断，已暂停 ChatGPT 音频，避免争抢播放权。';}if(Date.now()-lastAudioReport>=10000)reportAudio();}
+      if(localOwner() && !localChanging){if(Date.now()-lastAudioAck>20000&&!localAudio.paused){resumeOnVisible=playbackIntent;localAudio.pause();showNotice('状态同步中断，已暂停 ChatGPT 音频，避免争抢播放权。',{untilPlaying:true,ttlMs:Infinity});}if(Date.now()-lastAudioReport>=10000)reportAudio();}
       const audiblyActive=localOwner()&&!localAudio.paused;
       if (stopped || ((document.hidden||!onscreen)&&!audiblyActive)) return;
       render();
       if (Date.now() > activeUntil && !audiblyActive) {
-        if (el.auto.checked) { el.auto.checked = false; el.notice.textContent = '自动刷新已暂停。点刷新即可继续。'; }
+        if (el.auto.checked) { el.auto.checked = false; renderNotice(playbackStatus()); }
       } else if ((el.auto.checked||audiblyActive) && Date.now() - lastPoll >= 5000) refresh();
     }, 1000));
-    bridgeReady.then(() => refresh()).catch(() => { el.notice.textContent = '此宿主尚未提供交互桥接。可查看工具文字结果，继续使用原网页/PWA。'; render(); });
+    bridgeReady.then(() => refresh()).catch(() => { showNotice('此宿主尚未提供交互桥接。可查看工具文字结果，继续使用原网页/PWA。',{ttlMs:Infinity}); render(); });
   })();
   </script>
 </body>
