@@ -122,3 +122,21 @@ test('widget gracefully falls back when the host does not support interactive MC
     assert.equal(f.elements.toggle.disabled, true);
   } finally { await f.close(); }
 });
+
+test('widget orders phone revisions rather than RPC receipt time and displays actual heartbeat age', async () => {
+  const f=fixture();
+  try {
+    await f.initialize();
+    const initial=f.snapshot({streamId:'server-A',revision:12,observedAt:1800000000000-21000});
+    const notify=structuredContent=>f.message({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{structuredContent}});
+    await f.respond(f.last(),{structuredContent:initial});f.tick(1000);
+    assert.equal(f.elements.updated.textContent,'手机状态更新于 22 秒前');
+    await notify(f.snapshot({streamId:'server-A',revision:11,state:'paused',positionMs:0,current:{songId:'9',title:'Old song'},observedAt:1800000001000}));
+    assert.equal(f.elements.title.textContent,'Test song');assert.equal(f.elements.status.textContent,'手机正在播放');
+    await notify(f.snapshot({streamId:'server-A',revision:12,observedAt:initial.observedAt}));f.tick(1000);
+    assert.equal(f.elements.updated.textContent,'手机状态更新于 23 秒前','RPC refresh does not reset heartbeat age');
+    await notify(f.snapshot({streamId:'server-B',revision:1,observedAt:1800000002000,current:{songId:'2',title:'New server song'}}));
+    await notify(f.snapshot({streamId:'server-A',revision:99,current:{songId:'9',title:'Retired server song'}}));
+    assert.equal(f.elements.title.textContent,'New server song');
+  } finally {await f.close();}
+});

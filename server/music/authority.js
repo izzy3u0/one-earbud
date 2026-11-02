@@ -114,7 +114,7 @@ function createMusicAuthority(options) {
       pendingQr.delete(key);
       return { status: 'success', profile: acc.profile, vip: acc.vip };
     },
-    async logout() { await store.clear(); uidCache = ''; nowPlaying.clear(); return { connected: false }; },
+    async logout() { await store.clear(); uidCache = ''; nowPlaying.clear(null, now(), true); return { connected: false }; },
     async search(q, limit) { return withCookie(async c => ({ songs: await client.search(c, q, limit) })).then(r => r.songs); },
     async song(songId) {
       const [detail, lines] = await Promise.all([withCookie(c => client.songDetail(c, songId)), lyricsCached(String(songId))]);
@@ -127,7 +127,11 @@ function createMusicAuthority(options) {
       if (ok && input && input.songId) lyricsCached(String(input.songId)).catch(() => {});
       return ok;
     },
-    clearNowPlaying() { nowPlaying.clear(); },
+    claimNowPlaying(input) { return nowPlaying.claim(input, now()); },
+    ownsNowPlaying(input) { return nowPlaying.owns(input); },
+    canClaimNowPlaying() { return nowPlaying.canClaim(); },
+    nowPlayingVersion() { return nowPlaying.version(); },
+    clearNowPlaying(input) { return nowPlaying.clear(input, now()); },
     nowPlaying() { return nowPlaying.current(now()); },
     async nowPlayingDetails() {
       let cur = nowPlaying.current(now());
@@ -136,10 +140,13 @@ function createMusicAuthority(options) {
       const lines = await lyricsCached(songId).catch(() => []);
       // Don't return an old heartbeat if it expired or the phone switched while fetching lyrics.
       cur = nowPlaying.current(now());
-      if (!cur || cur.songId !== songId) return null;
+      if (!cur) return null;
+      // A switch while lyrics were in flight is still fresh; use the new song's
+      // cached lines (or no lyrics yet), never report an artificial disconnect.
+      const currentLines = cur.songId === songId ? lines : lyricCache.get(cur.songId) || [];
       let k = -1;
-      for (let i = 0; i < lines.length; i++) if (lines[i].timeMs <= cur.positionMs + 300) k = i;
-      return { ...cur, lyricContext: { previous: lines[k - 1] || null, current: lines[k] || null, next: lines[k + 1] || null } };
+      for (let i = 0; i < currentLines.length; i++) if (currentLines[i].timeMs <= cur.positionMs + 300) k = i;
+      return { ...cur, lyricContext: { previous: currentLines[k - 1] || null, current: currentLines[k] || null, next: currentLines[k + 1] || null } };
     },
     // 给TA的 prompt 用；没在听返回 ''
     renderNowPlaying() {

@@ -20,6 +20,9 @@ const listeners = new Set();
 let audio = null;
 let hasPlaybackSession = false; // Set only after the phone actually emitted `playing`.
 let heartbeat = 0;
+const reportSource = 'phone-' + (globalThis.crypto?.randomUUID?.() || Date.now().toString(36) + '-' + Math.random().toString(36).slice(2));
+let reportSequence = 0, reportLease = null, reportPending = null, reportFlight = null, mayClaim = true;
+let mediaSongId = null, playGeneration = 0, suspended = false;
 let urlFetchedAt = 0;
 // 下一首提前备好：快放完时先把下一首的详情和地址要回来，
 // 这首一停直接换上，不再「放完才去问服务器」。
@@ -46,26 +49,29 @@ function restoreLast() {
   } catch (_) {}
 }
 restoreLast();
-let stallT = -1, stallSince = 0, stallTries = 0;
-if (typeof window !== 'undefined') setInterval(() => {
+let stallT = -1, stallSince = 0, stallTries = 0, watchdogTimer = 0, syncTimer = 0;
+function watchPlayback() {
   if (!audio || !state.song || audio.paused || state.loading) { stallSince = 0; return; }
   const t = audio.currentTime;
   if (t !== stallT) { stallT = t; stallSince = Date.now(); stallTries = 0; return; }
   if (stallSince && Date.now() - stallSince > 8000 && stallTries < 2) { stallTries++; stallSince = Date.now(); recover({ play: true }); }
-}, 2000);
+}
+if (typeof window !== 'undefined') watchdogTimer = setInterval(watchPlayback, 2000);
 if (typeof window !== 'undefined') window.addEventListener('online', () => { if (state.song && state.error) { state.error = ''; emit(); if (audio && audio.getAttribute('src')) recover(); } fillDetail(); });
 // 苹果只认手势里同步调用的 play()：要是点了才去服务器拿地址，拿回来已经不算YOU点的了，就会被拦。
 // 所以恢复出来的这首先把地址备好，挂在 audio 上但不放。
 async function warmRestored() {
   if (!state.song || state.closed || (audio && audio.getAttribute('src'))) return;
   const songId = state.song.songId;
+  const generation = playGeneration;
   try {
     const [detail, url] = await Promise.all([apiRequest(API_BASE + '/song/' + encodeURIComponent(songId)).then(r => r.song), loadUrl(songId)]);
-    if (!state.song || state.song.songId !== songId || (audio && audio.getAttribute('src'))) return;
+    if (generation !== playGeneration || state.closed || !state.song || state.song.songId !== songId || (audio && audio.getAttribute('src'))) return;
     ensureAudio();
     state.song = { songId, title: detail.title, artist: detail.artist, album: detail.album, coverUrl: detail.coverUrl, durationMs: detail.durationMs };
     state.lyrics = Array.isArray(detail.lyrics) ? detail.lyrics : [];
     audio.src = url; urlFetchedAt = Date.now();
+    mediaSongId = String(songId);
     emit();
   } catch (_) {}
 }
@@ -81,12 +87,13 @@ function ensureAudio() {
   audio.setAttribute('playsinline', '');
   audio.style.display = 'none';
   document.body.appendChild(audio);
-  audio.addEventListener('play', () => { state.playing = true; state.buffering = true; state.error = ''; skipRun = 0; report(); emit(); fillDetail(); });
+  audio.addEventListener('play', () => { if (state.closed || state.loading || mediaSongId !== String(state.song?.songId)) return; state.playing = true; state.buffering = true; state.error = ''; skipRun = 0; report(); emit(); fillDetail(); });
   // 真出声了才算在放，这时候才撤加载中、才跟服务器说在听
   audio.addEventListener('playing', () => { hasPlaybackSession = true; if (state.buffering) { state.buffering = false; report(); emit(); } });
   audio.addEventListener('waiting', () => { if (!audio.paused && !state.buffering) { state.buffering = true; report(); emit(); } });
-  audio.addEventListener('pause', () => { state.playing = false; state.buffering = false; report(); emit(); });
+  audio.addEventListener('pause', () => { if (!audio.paused || state.loading) return; state.playing = false; state.buffering = false; report(); emit(); });
   audio.addEventListener('ended', () => {
+    if (state.closed || state.loading || mediaSongId !== String(state.song?.songId) || (!audio.paused && !audio.ended)) return;
     state.playing = false; state.buffering = false; report(); emit();
     // 试听版之类本来就短的，以 audio 自己的时长为准；同一首只救一次，免得来回转圈
     const meta = (state.song && state.song.durationMs) || 0, own = Number.isFinite(audio.duration) ? audio.duration * 1000 : meta;
@@ -119,12 +126,36 @@ export function durationMs() {
 }
 
 function report() {
-  if (!state.song || state.closed) return;
-  const body = { songId: state.song.songId, title: state.song.title, artist: state.song.artist, positionMs: positionMs(), durationMs: durationMs(), playing: state.playing && !state.buffering };
-  apiRequest(API_BASE + '/now-playing', { method: 'POST', body }).catch(() => {});
-  clearInterval(heartbeat);
-  // Paused state stays fresh too, until authority's existing ten-minute cutoff.
-  heartbeat = setInterval(report, HEARTBEAT_MS);
+  if (suspended || !state.song || state.closed || state.loading || mediaSongId !== String(state.song.songId)) return;
+  // Buffering/visibility changes are not a user pause. Sample the matching audio only.
+  reportPending = { sourceId: reportSource, sequence: ++reportSequence, generation:playGeneration, songId: state.song.songId, title: state.song.title, artist: state.song.artist, positionMs: positionMs(), durationMs: durationMs(), playing: !!(state.playing && audio && !audio.paused), active: hasPlaybackSession || !!(audio && !audio.paused) };
+  if (!heartbeat) heartbeat = setInterval(report, HEARTBEAT_MS);
+  flushReport();
+}
+function flushReport() {
+  if (reportFlight || suspended) return reportFlight;
+  reportFlight = (async () => {
+    while (reportPending && !suspended) {
+      let body = reportPending; reportPending = null;
+      if (!reportLease || (body.active && !reportLease.active)) {
+        if (!mayClaim) continue;
+        const lease = await apiRequest(API_BASE + '/now-playing/session', { method:'POST', body:{ sourceId:reportSource, active:body.active } });
+        if (!lease.accepted) { mayClaim = false; continue; }
+        reportLease = { ...lease, active:body.active };
+      }
+      // Coalesce events sampled while acquiring a session; no stale queued snapshots.
+      if (reportPending) { body = reportPending; reportPending = null; }
+      if (state.closed) {
+        await apiRequest(API_BASE + '/now-playing', { method:'DELETE', body:{ sourceId:reportSource, sessionId:reportLease.sessionId, sequence:++reportSequence } });
+        reportLease = null; continue;
+      }
+      if (suspended || body.generation !== playGeneration || String(state.song?.songId) !== String(body.songId)) continue;
+      if (body.active && !reportLease.active) { reportPending = body; continue; }
+      const result = await apiRequest(API_BASE + '/now-playing', { method:'POST', body:{ ...body, sessionId:reportLease.sessionId } });
+      if (result?.accepted === false && !result.sessionValid) { reportLease = null; mayClaim = result.canClaim === true; }
+    }
+  })().catch(() => {}).finally(() => { reportFlight = null; if (reportPending && !suspended) flushReport(); });
+  return reportFlight;
 }
 
 async function loadUrl(songId) {
@@ -168,15 +199,16 @@ function recover(opts) {
   if (!state.song) return Promise.resolve();
   if (recovering) return recovering;
   const songId = state.song.songId;
+  const generation = playGeneration;
   const at = positionMs(); const wasPlaying = state.playing || !!(opts && opts.play);
   recovering = (async () => {
     try {
       state.loading = true; emit();
       const url = await withTimeout(loadUrl(songId), 10000);
-      if (!state.song || state.song.songId !== songId) return;
+      if (generation !== playGeneration || !state.song || state.song.songId !== songId) return;
       audio.src = url; urlFetchedAt = Date.now();
       try { audio.currentTime = at / 1000; } catch (_) {}
-    } catch (e) { state.error = netMsg(e, '这首歌现在放不了'); state.loading = false; emit(); return; }
+    } catch (e) { if (generation !== playGeneration) return; state.error = netMsg(e, '这首歌现在放不了'); state.loading = false; emit(); return; }
     state.loading = false; emit();
     if (wasPlaying) audio.play().catch(() => { state.error = '点一下播放键开始'; emit(); });
   })().finally(() => { recovering = null; });
@@ -184,13 +216,16 @@ function recover(opts) {
 }
 
 // song：至少要 songId；有 title/artist 先显示，详情和歌词随后补齐
-export async function play(song, atMs) {
+export async function play(song, atMs, opts) {
+  const generation = ++playGeneration;
+  if (!opts?.automatic) mayClaim = true; // Only a deliberate play reclaims a fenced page.
   ensureAudio(); wantPlay = true;
   const songId = String(song && song.songId || '');
   if (!/^\d+$/.test(songId)) return;
   const same = !!(state.song && state.song.songId === songId && audio.getAttribute('src'));
   state.closed = false; state.error = '';
   if (!same) {
+    mediaSongId = null; reportPending = null;
     state.song = { songId, title: song.title || '', artist: song.artist || '', coverUrl: song.coverUrl || '', durationMs: song.durationMs || 0 };
     state.lyrics = [];
     state.loading = true; emit();
@@ -203,11 +238,13 @@ export async function play(song, atMs) {
       ]), 12000);
       needDetail = !detail;
       if (ready) urlFetchedAt = ready.at;
-      if (!state.song || state.song.songId !== songId) return; // 等待期间又换了歌
+      if (generation !== playGeneration || !state.song || state.song.songId !== songId) return;
       if (detail) { state.song = { songId, title: detail.title, artist: detail.artist, album: detail.album, coverUrl: detail.coverUrl, durationMs: detail.durationMs }; state.lyrics = Array.isArray(detail.lyrics) ? detail.lyrics : []; }
       audio.src = url;
+      mediaSongId = songId;
       saveLast();
     } catch (e) {
+      if (generation !== playGeneration || !state.song || state.song.songId !== songId) return;
       state.error = netMsg(e, '这首歌现在放不了');
       state.loading = false;
       // 上一首的音频还挂着：清掉，不然YOU点播放响的是上一首
@@ -222,7 +259,9 @@ export async function play(song, atMs) {
     }
     state.loading = false;
   } else if (Date.now() - urlFetchedAt > 15 * 60 * 1000) {
-    audio.src = await loadUrl(songId).catch(() => audio.src);
+    const url = await loadUrl(songId).catch(() => audio.src);
+    if (generation !== playGeneration || state.closed) return;
+    audio.src = url;
   }
   if (Number.isFinite(atMs)) audio.currentTime = Math.max(0, atMs) / 1000;
   // Safari can leave play() pending on a stalled connection; keep remote polling alive.
@@ -232,6 +271,7 @@ export async function play(song, atMs) {
 
 export function toggle() {
   if (!state.song) return;
+  mayClaim = true;
   wantPlay = !!(audio && audio.paused) || !audio || !audio.getAttribute('src');
   if (!audio || !audio.getAttribute('src')) { play(state.song, 0); return; }
   if (audio.paused) {
@@ -249,12 +289,15 @@ export function seek(ms) {
 
 // 关掉播放条：停、清空，服务器那边也清空（TA这边就不再看到「正在听」）
 export function close() {
+  ++playGeneration; state.closed = true; reportPending = null;
+  const lease = reportLease; reportLease = null; mayClaim = true;
   wantPlay = false;
   if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
-  clearInterval(heartbeat);
+  clearInterval(heartbeat); heartbeat = 0;
+  clearInterval(queuePoll); queuePoll = 0;
   state.song = null; state.lyrics = []; state.playing = false; state.buffering = false; state.closed = true; state.error = '';
   prefetched = null; prefetchFor = null; saveLast();
-  apiRequest(API_BASE + '/now-playing', { method: 'DELETE' }).catch(() => {});
+  if (lease) apiRequest(API_BASE + '/now-playing', { method: 'DELETE', body:{ sourceId:reportSource, sessionId:lease.sessionId, sequence:++reportSequence } }).catch(() => {});
   emit();
 }
 
@@ -297,7 +340,10 @@ export async function playQueueItem(id, opts) {
   queueOp('/current', { id: item.id }).catch(() => {});
   if (item.addedBy === 'ta') emitQueue({ taAdded: item, taPlayed: !!(opts && opts.taPlayed) });
   startQueuePoll();
-  await play({ songId: item.songId, title: item.title, artist: item.artist, coverUrl: item.coverUrl, durationMs: item.durationMs }, 0);
+  const pending = play({ songId: item.songId, title: item.title, artist: item.artist, coverUrl: item.coverUrl, durationMs: item.durationMs }, 0, { automatic:!!(opts?.auto || opts?.taPlayed) });
+  const generation = playGeneration;
+  await pending;
+  if (generation !== playGeneration || state.closed) return;
   state.queueItemId = item.id; saveLast(); emit();
 }
 function pickNext(opts) {
@@ -337,7 +383,7 @@ export async function next(opts) {
   // 预取之后YOU又加了歌/换了模式，预取的那首就不一定是「下一首」了：只有它还是该放的那首才用（随机模式本来就随便挑，照用）
   if (auto && prefetched && queue.items.some(x => x.id === prefetched.itemId)) {
     const want = queue.mode === 'shuffle' ? null : pickNext({ auto: true });
-    if (queue.mode === 'shuffle' || (want && want.id === prefetched.itemId)) { await playQueueItem(prefetched.itemId); return; }
+    if (queue.mode === 'shuffle' || (want && want.id === prefetched.itemId)) { await playQueueItem(prefetched.itemId, opts); return; }
   }
   if (!auto) await refreshQueue();
   const items = queue.items;
@@ -347,7 +393,7 @@ export async function next(opts) {
   if (queue.mode === 'one' && opts && opts.auto && at >= 0) target = items[at];
   else if (queue.mode === 'shuffle' && items.length > 1) { let k = at; while (k === at) k = Math.floor(Math.random() * items.length); target = items[k]; }
   else target = items[(at + 1) % items.length];
-  if (target) await playQueueItem(target.id);
+  if (target) await playQueueItem(target.id, opts);
 }
 export async function previous() {
   await refreshQueue();
@@ -392,10 +438,11 @@ export async function playFromTa(itemId) {
   state.queueItemId = item.id;
   emitQueue({ taAdded: item, taPlayed: true });
   startQueuePoll();
-  if (wasPlaying) { await play(item, 0); return; }
+  if (wasPlaying) { await play(item, 0, { automatic:true }); return; }
   await prepareQueueItem(item);
 }
 async function prepareQueueItem(item) {
+  ++playGeneration; mediaSongId = null; reportPending = null;
   // No audio.play() here: never attempt to bypass Safari's user-gesture requirement.
   state.queueItemId = item.id;
   if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); }
@@ -457,9 +504,23 @@ export function syncPlayback() {
   return syncInFlight;
 }
 if (typeof window !== 'undefined') {
-  setInterval(syncPlayback, 2000);
+  syncTimer = setInterval(syncPlayback, 2000);
   window.addEventListener('online', syncPlayback);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncPlayback(); report(); } });
+  window.addEventListener('pagehide', () => {
+    suspended = true; reportPending = null;
+    clearInterval(heartbeat); heartbeat = 0;
+    clearInterval(queuePoll); queuePoll = 0;
+    clearInterval(syncTimer); syncTimer = 0;
+    clearInterval(watchdogTimer); watchdogTimer = 0;
+  });
+  window.addEventListener('pageshow', () => {
+    suspended = false;
+    if (!syncTimer) syncTimer = setInterval(syncPlayback, 2000);
+    if (!watchdogTimer) watchdogTimer = setInterval(watchPlayback, 2000);
+    if (state.queueItemId && !queuePoll) startQueuePoll();
+    syncPlayback(); report();
+  });
   setTimeout(syncPlayback, 0);
 }
 // 写信挑歌时的试听：只听一下，不进列表。

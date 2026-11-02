@@ -86,8 +86,8 @@ function createTaMusicTool(options) {
       }
       if (action === 'now_playing') {
         const cur = authority.nowPlayingDetails ? await authority.nowPlayingDetails() : authority.nowPlaying();
-        if (!cur) return { ok: true, action, listening: false };
-        return { ok: true, action, listening: true, fresh: true, state: cur.state, songId: cur.songId, title: cur.title, artist: cur.artist, position: fmt(cur.positionMs), duration: fmt(cur.durationMs), positionMs: cur.positionMs, durationMs: cur.durationMs, lyricContext: cur.lyricContext, text: authority.renderNowPlaying() };
+        if (!cur) return { ok: true, action, listening: false, ...authority.nowPlayingVersion?.() };
+        return { ok: true, action, listening: true, fresh: true, streamId:cur.streamId, revision:cur.revision, observedAt:cur.observedAt, state: cur.state, songId: cur.songId, title: cur.title, artist: cur.artist, position: fmt(cur.positionMs), duration: fmt(cur.durationMs), positionMs: cur.positionMs, durationMs: cur.durationMs, lyricContext: cur.lyricContext, text: authority.renderNowPlaying() };
       }
       if (action === 'share') {
         const songId = String(input.songId || '');

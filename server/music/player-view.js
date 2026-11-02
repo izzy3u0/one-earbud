@@ -12,6 +12,7 @@ const songSchema = z.object({ songId: z.string(), title: z.string(), artist: z.s
 const lineSchema = z.object({ index: z.number(), timeMs: z.number(), text: z.string(), trans: z.string().optional() }).nullable();
 const playerViewSchema = z.object({
   ok: z.literal(true), kind: z.literal('one-earbud-player'), sampledAt: z.number(),
+  streamId: z.string().optional(), revision: z.number().optional(), observedAt: z.number().nullable().optional(),
   fresh: z.boolean(), state: z.enum(['playing', 'paused', 'unknown']),
   current: songSchema.nullable(), prepared: songSchema.nullable(), positionMs: z.number(),
   lyricContext: z.object({ previous: lineSchema, current: lineSchema, next: lineSchema }).nullable(),
@@ -41,13 +42,14 @@ function createPlayerView({ authority, tool }) {
       const coverUrl = await coverFor(playing.songId, q.items.find(x => x.songId === playing.songId));
       // A network fetch must not revive a heartbeat that expired/switched meanwhile.
       const latest = await tool.handler({ action: 'now_playing' });
-      if (latest.listening && latest.fresh && latest.songId === playing.songId) current = song(latest, coverUrl);
-      playing = current ? latest : { listening: false };
+      if (latest.listening && latest.fresh) current = song(latest, latest.songId === playing.songId ? coverUrl : safeCover(q.items.find(x => x.songId === latest.songId)?.coverUrl));
+      playing = latest;
     }
     q = authority.queue.get();
     const prepared = q.items.find(x => x.id === q.currentId);
     return {
       ok: true, kind: 'one-earbud-player', sampledAt: Date.now(), fresh: !!current,
+      streamId:playing.streamId, revision:playing.revision, observedAt:playing.observedAt,
       state: current ? playing.state : 'unknown', current,
       prepared: !current && prepared ? song(prepared, safeCover(prepared.coverUrl)) : null,
       positionMs: current ? playing.positionMs : 0,

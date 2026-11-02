@@ -38,12 +38,18 @@ function mountMusicRoutes(router, authority) {
     nostore(res); if (!guard(res)) return;
     try { const r = await authority.playUrl(String(req.params.id || '')); res.json({ ok: true, url: r.url, trial: r.trial }); } catch (e) { sendError(res, e, 'url'); }
   });
+  router.post('/music/now-playing/session', (req, res) => {
+    nostore(res); if (!guard(res)) return;
+    const session = authority.claimNowPlaying(req.body || {});
+    res.json({ ok: true, accepted: !!session, ...session });
+  });
   router.post('/music/now-playing', (req, res) => {
     nostore(res); if (!guard(res)) return;
     const ok = authority.reportNowPlaying(req.body || {});
+    if (req.body?.sessionId) return res.json({ ok: true, accepted: ok, sessionValid: authority.ownsNowPlaying(req.body), canClaim: authority.canClaimNowPlaying() });
     res.status(ok ? 200 : 400).json({ ok });
   });
-  router.delete('/music/now-playing', (req, res) => { nostore(res); if (!guard(res)) return; authority.clearNowPlaying(); res.json({ ok: true }); });
+  router.delete('/music/now-playing', (req, res) => { nostore(res); if (!guard(res)) return; const accepted = authority.clearNowPlaying(req.body?.sessionId ? req.body : req.body?.sourceId ? req.body : undefined); res.json({ ok: true, accepted }); });
 
   // ---------- 播放列表（YOU这边的操作；by 固定为 li，前端不能冒充 ke） ----------
   const Q_STATUS = { queue_forbidden: 403, queue_item_not_found: 404, queue_full: 409 };

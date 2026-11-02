@@ -147,6 +147,9 @@ Authorization: Bearer <MCP_AUTH_TOKEN 的实际值>
 - 播放器暂停、关闭或尚无播放会话时，只预先拿好音频地址，不调用自动播放；等用户点击播放键。不绕过 iOS autoplay。
 - PWA 被系统挂起、锁屏或手机断网时，网页 JavaScript 可能无法运行，不能保证实时控制。回到前台会立即同步；切歌指令 3 分钟过期，并且被用户/新指令改变当前项后作废。过期后可以从服务器当前队列手动选歌；免费实例文件系统重置后，队列也可能已清空。
 - 正在听仍沿用原心跳：每约 20 秒上报，60 秒无心跳失效，暂停超过 10 分钟不再算当前状态；不建历史库。
+- 播放状态使用手机页面会话及递增序号：同一页面的事件与心跳串行合并发送，服务器拒绝晚到/重复上报和已退出会话的请求。恢复出来的旧暂停页面不会覆盖正在播放的手机；在另一页面主动点播放才会接管上报。缓冲与切到后台本身不当作暂停，切歌加载中不发送新歌名配旧音频进度。
+- 卡片和 `music_now_playing` 读取同一个 authority 状态及版本；卡片丢弃旧版本响应，“手机状态更新于”显示真实心跳时间，而非刚刚完成轮询的时间。取歌词/封面期间切歌时返回新实况，不制造一次“没有手机实况”。
+- 更新这个同步版本后，刷新手机 PWA，然后在 ChatGPT 新开一张播放器卡片；已有卡片仍可能运行旧脚本。无需重新扫码、改口令或删除 OAuth 连接。服务重启后仍需手机发送新心跳，当前状态不写进 Neon 登录数据库。
 - 单用户服务，建议只开一个活跃播放设备；同时打开多个手机页面时，它们都会收到有效指令。
 
 ### 推荐 ChatGPT / plugin instruction
@@ -193,5 +196,7 @@ music_share 返回的是卡片数据，rendered=false 时不要说已经在 Chat
 运行 `npm test`，包含原有后端与播放器场景、MCP SDK HTTP 集成、OAuth 和手机播放同步模拟，以及外部登录态的冷启动恢复、刷新、退出、并发、加密、故障和迁移测试。OAuth 生命周期测试用可控时钟跨过两次一小时边界，验证 SDK 自动续期后两个工具仍可调用，并模拟本地文件全失、进程重叠、单次消费、错误受众/客户端/权限、30 天到期和存储故障。网易云和持久化数据库在测试中 mock，不需要真实扫码或账号；测试不证明你的 Neon/Render 环境变量已经配置。Windows 不验证 POSIX mode bits；Linux/Render 保留 0600 断言。
 
 实现追踪：`server/mcp.js` 只适配 `server/agent/tool-contract.js`，后者继续使用 music authority / queue。`play_now` 在原队列操作后发布短期指令；`web/music/player.js` 同步并复用原播放内核。没有重新实现网易云接口。
+
+同步回归测试 `server/test/playback-state.test.js` 包含真实播放器脚本的媒体事件/多页面/前后台/计时器销毁、旧歌曲加载失败、歌词与封面加载中切歌，以及通过 HTTP 和官方 MCP SDK 的 30 分钟虚拟时钟乱序压力测试。额外持续观察可运行 `ONE_EARBUD_STABILITY_MS=180000 node --test --test-name-pattern="wall-clock sustained" server/test/playback-state.test.js`（PowerShell 先设置 `$env:ONE_EARBUD_STABILITY_MS='180000'`）；它使用模拟 audio 和实际 HTTP/MCP，不能替代真实 iPhone 后台行为验收。
 
 平台参考：[Render Web Services](https://render.com/docs/web-services)、[Persistent Disks](https://render.com/docs/disks)、[Health Checks](https://render.com/docs/health-checks)。

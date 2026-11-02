@@ -45,6 +45,7 @@
     let view = null, receivedAt = 0, busy = false, reading = false, connected = false, stopped = false, onscreen = true;
     let mode = 'standard', rpcId = 0, hostOrigin = '*', lastPoll = 0, activeUntil = Date.now() + 300000;
     let failedControl = null;
+    const retiredStreams = new Set();
     const pending = new Map();
     const timers = [];
     function notify(method, params) { window.parent.postMessage({ jsonrpc:'2.0', method, params }, hostOrigin); }
@@ -62,7 +63,14 @@
     function accept(result) {
       const data = result?.structuredContent;
       if (data?.kind !== 'one-earbud-player' || data.ok !== true || !Number.isFinite(data.sampledAt)) return;
-      if (view && data.sampledAt < view.sampledAt) return;
+      if (view?.streamId && Number.isFinite(view.revision)) {
+        if (!data.streamId || !Number.isFinite(data.revision) || retiredStreams.has(data.streamId)) return;
+        if (data.streamId === view.streamId && data.revision < view.revision) return;
+        if (data.streamId !== view.streamId) {
+          if (data.sampledAt < view.sampledAt) return;
+          retiredStreams.add(view.streamId);
+        } else if (data.revision === view.revision && data.sampledAt < view.sampledAt) return;
+      } else if (view && data.sampledAt < view.sampledAt) return;
       view = data; receivedAt = Date.now(); render();
     }
     function receive(event) {
@@ -133,7 +141,8 @@
       const playing = current && view.state === 'playing';
       el['play-icon'].hidden = playing; el['pause-icon'].hidden = !playing;
       el.toggle.setAttribute('aria-label', playing ? '暂停手机播放' : '继续手机播放');
-      el.updated.textContent = view ? '状态更新于 ' + Math.max(0, Math.floor((Date.now() - receivedAt) / 1000)) + ' 秒前' : '尚未刷新';
+      const age = Number.isFinite(view?.observedAt) ? Math.max(0, view.sampledAt - view.observedAt) + Date.now() - receivedAt : Date.now() - receivedAt;
+      el.updated.textContent = view ? '手机状态更新于 ' + Math.max(0, Math.floor(age / 1000)) + ' 秒前' : '尚未刷新';
     }
     async function refresh(manual = false) {
       if (stopped || reading || !connected) return;
