@@ -18,7 +18,11 @@
     .footer{border-top:1px solid var(--line);padding-top:10px;font-size:10px;color:var(--muted)}.footer-row{display:flex;justify-content:space-between;gap:10px;align-items:center}.auto{display:flex;gap:5px;align-items:center;min-height:30px}.auto input{accent-color:var(--accent);margin:0}.notice{margin:3px 0 0;min-height:30px;overflow-wrap:anywhere}.sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
     [hidden]{display:none!important}@media(prefers-color-scheme:dark){:root{--paper:#30212b;--paper-end:#3a2633;--ink:#ffedf5;--muted:#d9b3c4;--line:#694453;--accent:#f0aac5;--soft:#4a2e3d;--button:#f0aac5;--button-ink:#482137;--button-hover:#f6bfd5;--progress:#f0aac5}}html[data-theme="light"]{color-scheme:light;--paper:#fff8fb;--paper-end:#fff0f6;--ink:#4d293a;--muted:#6f4d5e;--line:#edd5e0;--accent:#a83f66;--soft:#fbe4ee;--button:#f3aec7;--button-ink:#57253d;--button-hover:#ed9dbb;--progress:#c95783}html[data-theme="dark"]{color-scheme:dark;--paper:#30212b;--paper-end:#3a2633;--ink:#ffedf5;--muted:#d9b3c4;--line:#694453;--accent:#f0aac5;--soft:#4a2e3d;--button:#f0aac5;--button-ink:#482137;--button-hover:#f6bfd5;--progress:#f0aac5}
     @media(max-width:340px){.card{padding:14px}.track{grid-template-columns:64px minmax(0,1fr);gap:12px}.cover{width:64px;height:64px}h1{font-size:16px}.brand{font-size:10px}.controls{gap:16px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
-    .playback-choice{display:flex;align-items:center;gap:8px;margin:0 0 16px;font-size:12px;color:var(--muted)}.playback-choice select{min-height:36px;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--ink);padding:4px 10px;font:inherit}.playback-choice span{flex:1;text-align:right;font-size:11px}#seek{width:100%;accent-color:var(--progress);margin:8px 0}audio{display:none}
+    .playback-choice{display:flex;align-items:center;gap:8px;margin:0 0 16px;font-size:12px;color:var(--muted)}.playback-choice select{min-height:36px;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--ink);padding:4px 10px;font:inherit}.playback-choice span{flex:1;text-align:right;font-size:11px}audio{display:none}
+    #seek{--fill:0%;display:block;appearance:none;-webkit-appearance:none;width:100%;height:28px;margin:0;background:transparent;cursor:pointer;touch-action:pan-y}
+    #seek::-webkit-slider-runnable-track{height:4px;border-radius:4px;background:linear-gradient(to right,var(--progress) var(--fill),var(--line) var(--fill))}
+    #seek::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:16px;height:16px;margin-top:-6px;border:3px solid var(--paper);border-radius:50%;background:var(--progress);box-shadow:0 0 0 1px var(--progress)}
+    #seek::-moz-range-track{height:4px;border-radius:4px;background:var(--line)}#seek::-moz-range-progress{height:4px;border-radius:4px;background:var(--progress)}#seek::-moz-range-thumb{width:10px;height:10px;border:3px solid var(--paper);border-radius:50%;background:var(--progress);box-shadow:0 0 0 1px var(--progress)}#seek:disabled{cursor:default;opacity:.6}
   </style>
 </head>
 <body>
@@ -56,10 +60,22 @@
     const localAudio=el['local-audio'];
     let localLease=null,localTrack=null,localSequence=0,localGeneration=0,localChanging=false,localReady=false,localPlayed=false;
     let reportPending=null,reportFlight=null,widgetPolling=false,lastAudioReport=0,lastAudioAck=0;
-    let mayAcquire=false,claimRequest=null,ownerGeneration=0;
+    let mayAcquire=false,claimRequest=null,ownerGeneration=0,playbackIntent=false,resumeOnVisible=false,seekDragging=false,lastCheckpoint=0;
+    let checkpoint=null;
+    try {
+      const saved=window.openai?.widgetState?.privateContent?.playback;
+      if(saved?.version===1 && /^\d{1,20}$/.test(saved.song?.songId) && Number.isFinite(saved.positionMs) && saved.positionMs>=0 && typeof saved.playbackIntent==='boolean')checkpoint=saved;
+    }catch(_){}
+    function remember(force=false) {
+      if(!localTrack || (!force && Date.now()-lastCheckpoint<5000))return;
+      lastCheckpoint=Date.now();
+      checkpoint={version:1,song:{songId:localTrack.song.songId,title:String(localTrack.song.title||'').slice(0,160),artist:String(localTrack.song.artist||'').slice(0,160),coverUrl:safeCover(localTrack.song.coverUrl),durationMs:localTrack.song.durationMs},positionMs:Math.max(0,Math.round((localAudio.currentTime||0)*1000)),playbackIntent,actualPlaying:!localAudio.paused&&!localAudio.ended,savedAt:Date.now()};
+      // Official widget-scoped UI persistence only; never store lease/media URLs.
+      try {window.openai?.setWidgetState?.({privateContent:{playback:checkpoint}});}catch(_){}
+    }
     const handledCommands=new Set();
     const requestId=()=>window.crypto?.randomUUID?.() || 'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2);
-    function localOwner() { return !!(localLease && view?.playback?.mode==='chatgpt' && view.playback.sourceId===sourceId && !view.playback.handoff); }
+    function localOwner() { return !!(localLease && view?.playback?.mode==='chatgpt' && view.playback.sourceId===sourceId && view.playback.ownerSourceId===sourceId && !view.playback.handoff); }
     function playbackInfo(value) {
       if(!value || !view || value.streamId!==view.streamId || retiredStreams.has(value.streamId) || (view.playback?.streamId===value.streamId && value.epoch<view.playback.epoch))return;
       view.playback=value;
@@ -111,13 +127,14 @@
     function audioReady() {
       if(!localTrack || !localOwner() || localReady || localAudio.readyState<1 || (localAudio.currentSrc&&localAudio.currentSrc!==localAudio.src))return;
       try {localAudio.currentTime=Math.max(0,Math.min(Number.isFinite(localAudio.duration)?localAudio.duration:Infinity,(localTrack.positionMs||0)/1000));}catch(_){return;}
-      localReady=true;
+      localReady=true;remember(true);
       if(localTrack.playing && localPlayed)playLocal();
       else {el.notice.textContent=view?.playback?.resume?.reason==='timeout'?'旧端未确认，已超时收回播放权。若旧端仍有声音，请先暂停它；再点播放从保留位置继续。':'音频已准备好，点播放从当前位置继续；声音将来自 ChatGPT。';reportAudio();}
       render();
     }
     function playLocal() {
-      if(!localOwner() || !localReady || document.hidden)return;
+      if(!localOwner() || !localReady)return;
+      playbackIntent=true;
       const generation=localGeneration;
       localAudio.play().catch(()=>{if(generation!==localGeneration)return;el.notice.textContent='客户端限制了自动播放，请再点一次播放；也可切回手机 PWA。';reportAudio();render();});
     }
@@ -149,10 +166,11 @@
         const command=result._meta?.command;
         if(command && localTrack?.song.songId===command.songId && !handledCommands.has(command.id)){
           handledCommands.add(command.id);
-          if(command.action==='pause')localAudio.pause();
+          if(command.action==='pause'){playbackIntent=false;resumeOnVisible=false;localAudio.pause();remember(true);}
           else if(command.action==='resume'){if(localPlayed)playLocal();else el.notice.textContent='请先在这张卡片点播放。';}
           else await advance(command.action,command.id);
         }
+        if(resumeOnVisible && playbackIntent && result._meta?.lease?.sessionId===localLease?.sessionId && result._meta?.audio?.trackId===localTrack?.trackId && localOwner() && localReady && localAudio.paused && !document.hidden && onscreen){resumeOnVisible=false;playLocal();}
       }catch(_){el.notice.textContent='ChatGPT 音频暂时不可用，可重试或切回手机 PWA。';}
       finally{widgetPolling=false;render();}
     }
@@ -173,10 +191,10 @@
       finally{busy=false;render();}
     }
     localAudio.addEventListener('loadedmetadata',audioReady);
-    localAudio.addEventListener('playing',()=>{if(localOwner()){localPlayed=true;reportAudio();render();}});
-    localAudio.addEventListener('pause',()=>{reportAudio();render();});
-    localAudio.addEventListener('seeked',()=>{reportAudio();render();});
-    localAudio.addEventListener('timeupdate',()=>{if(localOwner())render();});
+    localAudio.addEventListener('playing',()=>{if(localOwner()){localPlayed=true;playbackIntent=true;resumeOnVisible=false;remember(true);reportAudio();render();}});
+    localAudio.addEventListener('pause',()=>{if(localOwner()&&!localChanging){if(playbackIntent&&(document.hidden||!onscreen))resumeOnVisible=true;remember(true);}reportAudio();render();});
+    localAudio.addEventListener('seeked',()=>{remember(true);reportAudio();render();});
+    localAudio.addEventListener('timeupdate',()=>{if(localOwner()){remember();render();}});
     localAudio.addEventListener('ended',()=>{if(localOwner()&&!localChanging){reportAudio();advance('ended');}});
     localAudio.addEventListener('error',()=>{if(localTrack){localAudio.pause();el.notice.textContent='这首无法在 ChatGPT 加载音频，请重试或切回手机 PWA。';reportAudio();render();}});
     function notify(method, params) { window.parent.postMessage({ jsonrpc:'2.0', method, params }, hostOrigin); }
@@ -228,7 +246,7 @@
     async function connect() {
       if (window.parent === window) throw new Error('no_host');
       try {
-        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'2.0.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
+        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'2.2.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
         theme(result?.hostContext);
         notify('ui/notifications/initialized', {});
       } catch (error) {
@@ -253,7 +271,8 @@
     function render() {
       const local=localOwner()&&localReady, chat=view?.playback?.mode==='chatgpt';
       const saved=view?.playback?.handoff?.snapshot, prepared=!!saved || (!fresh()&&!!view?.playback?.resume?.songId);
-      const current = local || fresh(), song = local ? localTrack.song : saved ? (view?.prepared || saved) : current ? view.current : view?.prepared;
+      const recovered=!local&&!saved&&!fresh()&&!view?.prepared&&view?.playback?.mode==='chatgpt'?checkpoint:null;
+      const current = local || fresh(), song = local ? localTrack.song : saved ? (view?.prepared || saved) : current ? view.current : view?.prepared || recovered?.song;
       const playbackState=local ? (localAudio.paused?'paused':'playing') : view?.state;
       el['source-label'].textContent='分你一只耳机 · 声音来自 '+(chat?'ChatGPT':'PWA');
       el['playback-mode'].value=view?.playback?.handoff?.target||(chat?'chatgpt':'pwa');el['playback-mode'].disabled=!connected||busy||!view?.playback;
@@ -261,7 +280,7 @@
       el['mode-status'].textContent=view?.playback?.handoff?'等待停声 · '+remaining+' 秒':chat?(localOwner()?'此卡片播放':'点播放接到此卡片'):'稳定模式 · 手机 PWA';
       el.title.textContent = song?.title || (view ? '此刻没有手机实况' : '分你一只耳机');
       el.artist.textContent = song?.artist || (view ? '打开 PWA，让这只耳机重新连上' : '正在连接手机播放器…');
-      el.status.textContent = view?.playback?.handoff ? '切换中 · 已保留歌曲和进度' : current ? (chat?'ChatGPT':'手机')+(playbackState==='playing'?'正在播放':'已暂停') : song ? (prepared?'交接歌曲已准备 · 非实况':'队列中待播放 · 非实况') : chat?'ChatGPT 播放端未更新':'手机状态未更新';
+      el.status.textContent = view?.playback?.handoff ? '切换中 · 已保留歌曲和进度' : current ? (chat?'ChatGPT':'手机')+(playbackState==='playing'?'正在播放':'已暂停') : recovered?'上次播放位置 · 非实况':song ? (prepared?'交接歌曲已准备 · 非实况':'队列中待播放 · 非实况') : chat?'ChatGPT 播放端未更新':'手机状态未更新';
       const cover = safeCover(song?.coverUrl);
       if (cover && el.cover.getAttribute('src') !== cover) { el.cover.src = cover; el.cover.hidden = false; }
       if (!cover) { el.cover.removeAttribute('src'); el.cover.hidden = true; }
@@ -271,12 +290,14 @@
       el['current-line'].textContent = context?.current?.text || (current ? '前奏或暂无歌词' : '等手机回报新的播放状态');
       el.translation.textContent = context?.current?.trans || '';
       el['next-line'].textContent = context?.next?.text || '';
-      const duration = current || prepared ? Number(song?.durationMs) || 0 : 0;
-      const position = current || prepared ? Math.min(duration || Infinity, Math.max(0, local?(localAudio.currentTime||0)*1000:saved?.positionMs ?? view.positionMs ?? view?.playback?.resume?.positionMs ?? 0)) : 0;
+      const duration = current || prepared || recovered ? Number(song?.durationMs) || 0 : 0;
+      const position = current || prepared || recovered ? Math.min(duration || Infinity, Math.max(0, local?(localAudio.currentTime||0)*1000:recovered?.positionMs ?? saved?.positionMs ?? view.positionMs ?? view?.playback?.resume?.positionMs ?? 0)) : 0;
       el.progress.value = duration > 0 ? 100 * position / duration : 0;
-      el.position.textContent = current || prepared ? fmt(position) : '—:—';
-      el.duration.textContent = current || prepared ? fmt(duration) : '—:—';
-      el.seek.hidden=!local;el.seek.value=duration>0?Math.round(position/duration*1000):0;
+      el.position.textContent = current || prepared || recovered ? fmt(position) : '—:—';
+      el.duration.textContent = current || prepared || recovered ? fmt(duration) : '—:—';
+      el.progress.hidden=chat;el.seek.hidden=!chat;el.seek.disabled=!local||busy;
+      if(!seekDragging){el.seek.value=duration>0?Math.round(position/duration*1000):0;el.seek.style.setProperty('--fill',(Number(el.seek.value)/10)+'%');}
+      el.seek.setAttribute('aria-valuetext',fmt(position)+' / '+fmt(duration));
       el.toggle.disabled = !connected || !(current || (chat&&song)) || busy || !!view?.playback?.handoff;
       el.previous.disabled = el.next.disabled = !connected || !current || busy || !view?.queue?.count || (chat&&!localOwner());
       el.refresh.disabled = !connected || reading;
@@ -298,7 +319,7 @@
       if(view?.playback?.mode==='chatgpt') {
         if(!localOwner()){await switchPlayback('chatgpt');return;}
         activeUntil=Date.now()+300000;
-        if(action==='pause')localAudio.pause();else if(action==='resume')playLocal();else await advance(action);
+        if(action==='pause'){playbackIntent=false;resumeOnVisible=false;localAudio.pause();remember(true);}else if(action==='resume')playLocal();else await advance(action);
         return;
       }
       if (!fresh() || busy || !connected) return;
@@ -316,13 +337,19 @@
     el.refresh.addEventListener('click', () => refresh(true));
     el.toggle.addEventListener('click', () => control(localOwner()?(localAudio.paused?'resume':'pause'):view?.state === 'playing' ? 'pause' : 'resume'));
     el['playback-mode'].addEventListener('change',()=>switchPlayback(el['playback-mode'].value));
-    el.seek.addEventListener('change',()=>{if(localOwner()&&localReady){localAudio.currentTime=durationForLocal()*Number(el.seek.value)/1000;reportAudio();render();}});
+    el.seek.addEventListener('input',()=>{if(localOwner()&&localReady){seekDragging=true;el.seek.style.setProperty('--fill',(Number(el.seek.value)/10)+'%');el.position.textContent=fmt(durationForLocal()*Number(el.seek.value));}});
+    el.seek.addEventListener('change',()=>{seekDragging=false;if(localOwner()&&localReady){localAudio.currentTime=durationForLocal()*Number(el.seek.value)/1000;remember(true);reportAudio();render();}});
+    el.seek.addEventListener('pointercancel',()=>{seekDragging=false;render();});
     function durationForLocal(){return (localTrack?.song.durationMs||0)/1000;}
     el.previous.addEventListener('click', () => control('previous'));
     el.next.addEventListener('click', () => control('next'));
     el.cover.addEventListener('error', () => { el.cover.hidden = true; });
     el.auto.addEventListener('change', () => { if (el.auto.checked) refresh(true); });
-    document.addEventListener('visibilitychange', () => { if(document.hidden && localOwner())localAudio.pause();else if (!document.hidden && el.auto.checked) refresh(); });
+    document.addEventListener('visibilitychange', () => {
+      remember(true);
+      if(document.hidden){if(localOwner()&&localAudio.paused&&playbackIntent)resumeOnVisible=true;reportAudio();}
+      else {if(localOwner()&&localAudio.paused&&playbackIntent)resumeOnVisible=true;if(el.auto.checked||localOwner())refresh();}
+    });
     let lastHeight = 0, lastWidth = 0;
     function sizeChanged() {
       if (!connected || stopped || typeof document.body?.getBoundingClientRect !== 'function') return;
@@ -336,11 +363,13 @@
     resizeObserver?.observe(document.body);
     const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
       onscreen = entries.some(entry => entry.isIntersecting);
+      if(onscreen&&localOwner()&&localAudio.paused&&playbackIntent)resumeOnVisible=true;
       if (onscreen && !document.hidden && el.auto.checked) refresh();
     }) : null;
     observer?.observe(document.body);
     window.addEventListener('openai:set_globals', event => { if (mode === 'compatibility') accept({ structuredContent:event.detail?.globals?.toolOutput || window.openai?.toolOutput }); });
     function cleanup() {
+      remember(true);
       ++ownerGeneration;
       mayAcquire=false;
       if(localLease){const args={op:'release',sourceId,...localLease,sequence:++localSequence,positionMs:Math.round((localAudio.currentTime||0)*1000)};stopAudio();
@@ -352,11 +381,12 @@
       pending.forEach(waiter => { clearTimeout(waiter.timer); waiter.reject(new Error('closed')); }); pending.clear();
       window.removeEventListener('message', receive); render();
     }
-    window.addEventListener('pagehide', cleanup, { once:true });
+    window.addEventListener('pagehide', event => {remember(true);if(!event.persisted)cleanup();});
+    window.addEventListener('pageshow', event => {if(event.persisted&&!stopped)refresh();});
     timers.push(setInterval(() => {
-      if(localOwner() && !localChanging){if(Date.now()-lastAudioAck>20000&&!localAudio.paused){localAudio.pause();el.notice.textContent='状态同步中断，已暂停 ChatGPT 音频，避免争抢播放权。';}if(Date.now()-lastAudioReport>=10000)reportAudio();}
+      if(localOwner() && !localChanging){if(Date.now()-lastAudioAck>20000&&!localAudio.paused){resumeOnVisible=playbackIntent;localAudio.pause();el.notice.textContent='状态同步中断，已暂停 ChatGPT 音频，避免争抢播放权。';}if(Date.now()-lastAudioReport>=10000)reportAudio();}
       const audiblyActive=localOwner()&&!localAudio.paused;
-      if (stopped || document.hidden || (!onscreen&&!audiblyActive)) return;
+      if (stopped || ((document.hidden||!onscreen)&&!audiblyActive)) return;
       render();
       if (Date.now() > activeUntil && !audiblyActive) {
         if (el.auto.checked) { el.auto.checked = false; el.notice.textContent = '自动刷新已暂停。点刷新即可继续。'; }

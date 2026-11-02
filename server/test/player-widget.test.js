@@ -10,7 +10,7 @@ const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function fixture(options = {}) {
   class Target {
-    constructor() { this.listeners = new Map(); this.attrs = {}; this.dataset = {}; this.textContent = ''; this.hidden = false; this.disabled = true; this.checked = false; }
+    constructor() { this.listeners = new Map(); this.attrs = {}; this.dataset = {}; this.style={setProperty:(k,v)=>{this.style[k]=v;}}; this.textContent = ''; this.hidden = false; this.disabled = true; this.checked = false; }
     addEventListener(type, fn) { this.listeners.set(type, [...this.listeners.get(type) || [], fn]); }
     removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(x => x !== fn)); }
     emit(type, value = {}) { return Promise.all((this.listeners.get(type) || []).map(fn => fn(value))); }
@@ -22,10 +22,12 @@ function fixture(options = {}) {
   const window = new Target(), document = new Target(), sent = [], timers = new Map(), intervals = new Map();
   let now = 1800000000000, timerId = 0, toolHandler=null;
   const parent = { postMessage(message) { sent.push(message); if(toolHandler&&message.method==='tools/call') Promise.resolve().then(()=>toolHandler(message.params.name,message.params.arguments)).then(result=>window.emit('message',{source:parent,origin:'https://chatgpt.com',data:{jsonrpc:'2.0',id:message.id,result}})); } };
-  window.parent = parent; window.crypto = { randomUUID: () => 'widget-unique-request-' + (++timerId) };
+  window.parent = parent; window.crypto = { randomUUID: () => (options.idPrefix||'widget-unique-request-') + (++timerId) };
+  const savedStates=[];window.openai={widgetState:options.widgetState,setWidgetState(value){this.widgetState=structuredClone(value);savedStates.push(this.widgetState);}};
+  let intersect;
   document.getElementById = id => elements[id]; document.documentElement = { dataset:{} }; document.hidden = false;
   document.body = new Target(); document.body.getBoundingClientRect = () => ({ width:375, height:460 });
-  const context = { window, document, URL, console, Date:class extends Date { static now() { return now; } },
+  const context = { window, document, URL, console, IntersectionObserver:class{constructor(callback){intersect=callback;}observe(){}disconnect(){}}, Date:class extends Date { static now() { return now; } },
     setTimeout(fn, ms) { const id=++timerId; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); },
     setInterval(fn, ms) { const id=++timerId; intervals.set(id, { fn, ms }); return id; }, clearInterval(id) { intervals.delete(id); }
   };
@@ -36,7 +38,7 @@ function fixture(options = {}) {
   const message = data => window.emit('message', { source:parent, origin:'https://chatgpt.com', data });
   const respond = async (request, result, error) => { await message({ jsonrpc:'2.0', id:request.id, ...(error ? { error } : { result }) }); await flush(); };
   const last = () => sent.filter(x => x.id && x.method === 'tools/call').at(-1);
-  return { elements, window, document, sent, timers, intervals, message, respond, last, now:()=>now, serveTools(handler){toolHandler=handler;}, tick(ms) { now += ms; intervals.forEach(x => x.fn()); },
+  return { elements, window, document, sent, timers, intervals, message, respond, last, savedStates, intersect(value){intersect([{isIntersecting:value}]);}, now:()=>now, serveTools(handler){toolHandler=handler;}, tick(ms) { now += ms; intervals.forEach(x => x.fn()); },
     snapshot(overrides = {}) { return { ok:true, kind:'one-earbud-player', sampledAt:now, fresh:true, state:'playing', current:{ songId:'123', title:'Test song', artist:'Test artist', coverUrl:'https://p1.music.126.net/test.jpg', durationMs:180000 }, prepared:null, positionMs:10000, lyricContext:{ previous:{text:'Previous'}, current:{text:'Current',trans:'Translation'}, next:{text:'Next'} }, queue:{ count:3, mode:'seq' }, ...overrides }; },
     async initialize() {
       assert.equal(sent[0].method, 'ui/initialize');
@@ -144,7 +146,7 @@ test('widget orders phone revisions rather than RPC receipt time and displays ac
   } finally {await f.close();}
 });
 
-test('V2 actual widget script plays only after a click, seeks, pauses in background, advances and releases on close',async t=>{
+test('V2 single pink seek stays synchronized; hidden/offscreen playback continues and host pauses restore safely',async t=>{
   const os=require('node:os'),{createMusicAuthority}=require('../music/authority'),{createTaMusicTool}=require('../agent/tool-contract');
   const {createPlayerView}=require('../music/player-view'),{createWidgetPlayback}=require('../music/widget-playback');
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'earbud-ui-v2-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
@@ -162,17 +164,52 @@ test('V2 actual widget script plays only after a click, seeks, pauses in backgro
     audio.readyState=1;await audio.emit('loadedmetadata');await settle();assert.equal(audio.paused,true);
     await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);assert.equal(audio.playCalls,1);assert.equal(authority.nowPlaying().state,'playing');assert.equal(authority.nowPlaying().playbackMode,'chatgpt');
     assert.equal(f.elements.status.textContent,'ChatGPT正在播放');assert.equal(f.elements['current-line'].textContent,'Test lyric');
-    f.elements.seek.value=500;await f.elements.seek.emit('change');await settle();assert.equal(audio.currentTime,90);assert.ok(authority.nowPlaying().positionMs>=90000);
+    assert.equal(f.elements.progress.hidden,true);assert.equal(f.elements.seek.hidden,false);assert.equal(f.elements.seek.disabled,false);
+    assert.match(html,/#seek::-webkit-slider-thumb/);assert.match(html,/#seek::-moz-range-thumb/);
+    f.elements.seek.value=500;await f.elements.seek.emit('input');audio.currentTime=12;await audio.emit('timeupdate');assert.equal(f.elements.seek.value,500,'sampling must not fight a dragging finger');assert.equal(f.elements.seek.style['--fill'],'50%');
+    await f.elements.seek.emit('change');await settle();assert.equal(audio.currentTime,90);assert.ok(authority.nowPlaying().positionMs>=90000);
     for(let i=0;i<30;i++){audio.currentTime+=1;f.tick(1000);await settle();assert.equal(audio.paused,false);}
-    f.document.hidden=true;await f.document.emit('visibilitychange');await settle();assert.equal(audio.paused,true);assert.equal(authority.nowPlaying().state,'paused');
-    f.document.hidden=false;await f.document.emit('visibilitychange');await settle();
+    f.intersect(false);f.document.hidden=true;await f.document.emit('visibilitychange');await settle();assert.equal(audio.paused,false);assert.equal(authority.nowPlaying().state,'playing');
+    for(let i=0;i<30;i++){audio.currentTime+=1;f.tick(1000);await settle();assert.equal(audio.paused,false,'offscreen audio must still poll and report beyond the 20s guard');}
+    assert.equal(authority.nowPlaying().state,'playing');
+    audio.pause();await settle();assert.equal(authority.nowPlaying().state,'paused','a real host pause is reported honestly');
+    const checkpoint=f.savedStates.at(-1).privateContent.playback;assert.equal(checkpoint.song.songId,'1');assert.equal(checkpoint.positionMs,150000);assert.equal(checkpoint.playbackIntent,true);assert.equal(checkpoint.actualPlaying,false);
+    assert.doesNotMatch(JSON.stringify(checkpoint),/sessionId|trackId|widget-media|TEST_ONLY_COOKIE|url/);
+    f.document.hidden=false;f.intersect(true);await f.document.emit('visibilitychange');await settle();assert.equal(audio.paused,false,'returning validates owner before a best-effort resume');assert.equal(audio.currentTime,150);
+    await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,true);assert.equal(f.savedStates.at(-1).privateContent.playback.playbackIntent,false);
+    f.document.hidden=true;await f.document.emit('visibilitychange');f.intersect(false);f.document.hidden=false;f.intersect(true);await f.document.emit('visibilitychange');await settle();assert.equal(audio.paused,true,'explicit user pause never auto-resumes');
+    await f.window.emit('pagehide',{persisted:true});assert.ok(f.intervals.size>0);await f.window.emit('pageshow',{persisted:true});await settle();assert.equal(audio.currentTime,150);
     holdPoll=true;f.tick(5000);await settle();assert.equal(typeof releasePoll,'function');
     await f.elements.next.emit('click');await settle();const newerUrl=audio.src;releasePoll();await settle();assert.equal(audio.src,newerUrl,'late audio descriptor cannot replace the next track');
     audio.readyState=1;await audio.emit('loadedmetadata');await settle();
     assert.equal(authority.nowPlaying().songId,'2');assert.equal(audio.paused,true,'paused skips only prepare the next track');
     await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);
     audio.currentTime=37;await audio.emit('seeked');await settle();
+    f.intersect(false);f.document.hidden=true;audio.pause();await settle();
+    const owner=authority.playbackOwner(),last=f.sent.filter(x=>x.params?.name==='music_widget_playback'&&x.params.arguments.op==='report').at(-1).params.arguments;
+    authority.switchPlayback({target:'pwa',sourceId:'widget-another-source',requestId:'return-during-suspension',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});
+    authority.acknowledgeHandoff({...last,sequence:last.sequence+100,handoffId:authority.playbackOwner().handoff.id,positionMs:37000});
+    const plays=audio.playCalls;f.document.hidden=false;f.intersect(true);await f.document.emit('visibilitychange');await settle();
+    assert.equal(audio.paused,true);assert.equal(audio.playCalls,plays,'an old widget must not resume after ownership was handed back to PWA');
     await f.close();await settle();assert.equal(audio.paused,true);assert.equal(authority.playbackOwner().ownerSourceId,null);assert.equal(authority.nowPlaying().state,'paused');assert.ok(authority.nowPlaying().positionMs>=37000);
+    const reopened=fixture({audio:true,idPrefix:'reopened-widget-',widgetState:f.savedStates.at(-1)});
+    try {
+      await reopened.initialize();reopened.serveTools(async(name,args)=>name==='music_player_state'?{structuredContent:await view()}:adapter.handle(args));
+      await reopened.respond(reopened.last(),{structuredContent:await view()});
+      reopened.elements['playback-mode'].value='chatgpt';await reopened.elements['playback-mode'].emit('change');await settle();
+      const restored=reopened.elements['local-audio'];restored.readyState=1;await restored.emit('loadedmetadata');await settle();
+      assert.equal(reopened.elements.title.textContent,'Song 2');assert.equal(restored.currentTime,37);assert.equal(restored.playCalls,0,'remount prepares the latest song/position without using checkpoint as playback authority');
+    }finally{await reopened.close();}
+  } finally {await f.close();}
+});
+
+test('widget restoration displays a non-authoritative checkpoint without replaying audio or persisting capabilities',async()=>{
+  const widgetState={privateContent:{playback:{version:1,song:{songId:'42',title:'Saved song',artist:'Artist',durationMs:180000},positionMs:63000,playbackIntent:true,actualPlaying:true,savedAt:1799999990000}}};
+  const f=fixture({audio:true,widgetState});
+  try {
+    await f.initialize();await f.respond(f.last(),{structuredContent:f.snapshot({fresh:false,current:null,prepared:null,playback:{mode:'chatgpt',epoch:1,sourceId:'another-widget',streamId:'stream-A',handoff:null}})});
+    assert.equal(f.elements.title.textContent,'Saved song');assert.equal(f.elements.position.textContent,'1:03');assert.match(f.elements.status.textContent,/非实况/);assert.equal(f.elements['local-audio'].playCalls,0);
+    assert.equal(f.elements.seek.disabled,true);assert.equal(f.sent.filter(x=>x.params?.name==='music_widget_playback'&&x.params.arguments.op==='claim').length,0);
   } finally {await f.close();}
 });
 
