@@ -24,6 +24,7 @@ const reportSource = 'phone-' + (globalThis.crypto?.randomUUID?.() || Date.now()
 let reportSequence = 0, reportLease = null, reportPending = null, reportFlight = null, mayClaim = true;
 let mediaSongId = null, playGeneration = 0, suspended = false;
 let playbackSelection = { mode:'pwa',epoch:0 }, playbackKnown = false, handoffBusy = false, lastResume = null;
+let handoffStop = null;
 function pwaSelected() { return playbackSelection.mode === 'pwa' && !handoffBusy; }
 function requirePwa() { if(!playbackKnown || !pwaSelected()){state.error=playbackKnown?'当前播放端是 ChatGPT，请先在卡片切回手机 PWA':'正在确认播放端，请稍后再点播放';emit();if(!playbackKnown)syncPlayback();return false;}return true; }
 async function confirmPwa() { if(!playbackKnown)await syncPlayback();return requirePwa(); }
@@ -155,8 +156,14 @@ function flushReport() {
       }
       if (suspended || body.generation !== playGeneration || String(state.song?.songId) !== String(body.songId)) continue;
       if (body.active && !reportLease.active) { reportPending = body; continue; }
-      const result = await apiRequest(API_BASE + '/now-playing', { method:'POST', body:{ ...body, sessionId:reportLease.sessionId } });
-      if (result?.accepted === false && !result.sessionValid) { reportLease = null; mayClaim = result.canClaim === true; }
+      const sessionId=reportLease.sessionId;
+      const result = await apiRequest(API_BASE + '/now-playing', { method:'POST', body:{ ...body, sessionId } });
+      if(reportLease?.sessionId!==sessionId)continue; // ACK may have completed while this request was in flight.
+      if (result?.accepted === false && !result.sessionValid) {
+        reportLease = null; mayClaim = result.canClaim === true;
+        // A timed-out handoff may revoke us while iOS has suspended sync polling.
+        if (!mayClaim) { ++playGeneration; reportPending=null; wantPlay=false; if(audio)audio.pause(); syncPlayback(); }
+      }
     }
   })().catch(() => {}).finally(() => { reportFlight = null; if (reportPending && !suspended) flushReport(); });
   return reportFlight;
@@ -523,17 +530,22 @@ async function syncPlaybackOwner(owner) {
   playbackSelection = owner;
   if (owner.handoff && owner.ownerSourceId === reportSource) {
     handoffBusy = true; ++playGeneration; reportPending = null;
-    const at=positionMs(),playing=!!(audio&&!audio.paused&&!audio.ended),song=mediaSongId===String(state.song?.songId)?state.song:null; wantPlay=false;
+    if(handoffStop?.id!==owner.handoff.id) handoffStop={id:owner.handoff.id,at:positionMs(),playing:!!(audio&&!audio.paused&&!audio.ended),song:mediaSongId===String(state.song?.songId)?state.song:null};
+    const {at,playing,song}=handoffStop; wantPlay=false;
     if(audio) audio.pause();
-    await reportFlight;
-    if(reportLease) {
-      const result=await apiRequest(API_BASE+'/playback-handoff',{method:'POST',body:{sourceId:reportSource,sessionId:reportLease.sessionId,sequence:++reportSequence,handoffId:owner.handoff.id,positionMs:at,...(song?{songId:String(song.songId),title:song.title,artist:song.artist,durationMs:durationMs(),playing}:{})}});
-      playbackSelection=result.playback || owner;
-    }
-    reportLease=null;mayClaim=false;handoffBusy=false;emit();return false;
+    try {
+      // The higher sequence fences a delayed heartbeat; don't wait for its fetch.
+      if(reportLease) {
+        const result=await apiRequest(API_BASE+'/playback-handoff',{method:'POST',body:{sourceId:reportSource,sessionId:reportLease.sessionId,sequence:++reportSequence,handoffId:owner.handoff.id,positionMs:at,...(song?{songId:String(song.songId),title:song.title,artist:song.artist,durationMs:durationMs(),playing}:{})}});
+        playbackSelection=result.playback || owner;
+        reportLease=null;mayClaim=false;
+      }
+    } finally { handoffBusy=false;emit(); }
+    return false;
   }
   if (owner.mode!=='pwa' || owner.handoff) {
     if(audio && !audio.paused) {++playGeneration;reportPending=null;wantPlay=false;audio.pause();}
+    if(owner.mode!=='pwa') { reportLease=null;mayClaim=false; }
     state.error='当前播放端是 ChatGPT，可在音乐卡片切回手机 PWA';emit();return false;
   }
   const saved=owner.resume;

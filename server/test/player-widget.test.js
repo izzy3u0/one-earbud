@@ -36,7 +36,7 @@ function fixture(options = {}) {
   const message = data => window.emit('message', { source:parent, origin:'https://chatgpt.com', data });
   const respond = async (request, result, error) => { await message({ jsonrpc:'2.0', id:request.id, ...(error ? { error } : { result }) }); await flush(); };
   const last = () => sent.filter(x => x.id && x.method === 'tools/call').at(-1);
-  return { elements, window, document, sent, timers, intervals, message, respond, last, serveTools(handler){toolHandler=handler;}, tick(ms) { now += ms; intervals.forEach(x => x.fn()); },
+  return { elements, window, document, sent, timers, intervals, message, respond, last, now:()=>now, serveTools(handler){toolHandler=handler;}, tick(ms) { now += ms; intervals.forEach(x => x.fn()); },
     snapshot(overrides = {}) { return { ok:true, kind:'one-earbud-player', sampledAt:now, fresh:true, state:'playing', current:{ songId:'123', title:'Test song', artist:'Test artist', coverUrl:'https://p1.music.126.net/test.jpg', durationMs:180000 }, prepared:null, positionMs:10000, lyricContext:{ previous:{text:'Previous'}, current:{text:'Current',trans:'Translation'}, next:{text:'Next'} }, queue:{ count:3, mode:'seq' }, ...overrides }; },
     async initialize() {
       assert.equal(sent[0].method, 'ui/initialize');
@@ -173,5 +173,31 @@ test('V2 actual widget script plays only after a click, seeks, pauses in backgro
     await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);
     audio.currentTime=37;await audio.emit('seeked');await settle();
     await f.close();await settle();assert.equal(audio.paused,true);assert.equal(authority.playbackOwner().ownerSourceId,null);assert.equal(authority.nowPlaying().state,'paused');assert.ok(authority.nowPlaying().positionMs>=37000);
+  } finally {await f.close();}
+});
+
+test('actual card retains handoff song and progress past heartbeat expiry, then prepares paused audio after timeout without another switch',async t=>{
+  const os=require('node:os'),{createMusicAuthority}=require('../music/authority'),{createTaMusicTool}=require('../agent/tool-contract');
+  const {createPlayerView}=require('../music/player-view'),{createWidgetPlayback}=require('../music/widget-playback');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'earbud-ui-handoff-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const f=fixture({audio:true}),song={songId:'1',title:'Retained phone song',artist:'Artist',durationMs:180000};
+  const authority=createMusicAuthority({now:f.now,queueFile:path.join(dir,'queue.json'),store:{cookie:()=>'',refreshCookie(){}},client:{songDetail:async()=>song,lyrics:async()=>({lines:[]}),playUrl:async()=>({url:'https://m701.music.126.net/test.mp3'})}});
+  const phone={sourceId:'phone-suspended-A',...authority.claimNowPlaying({sourceId:'phone-suspended-A',active:true})};
+  authority.reportNowPlaying({...phone,...song,sequence:1,positionMs:42000,playing:true});f.tick(59000);
+  const view=createPlayerView({authority,tool:createTaMusicTool({authority})}),adapter=createWidgetPlayback({authority,publicUrl:'https://music.example.test'});
+  const settle=async()=>{for(let i=0;i<20;i++)await flush();};
+  try {
+    await f.initialize();f.serveTools(async(name,args)=>name==='music_player_state'?{structuredContent:await view()}:adapter.handle(args));
+    await f.respond(f.last(),{structuredContent:await view()});
+    f.elements['playback-mode'].value='chatgpt';await f.elements['playback-mode'].emit('change');await settle();
+    assert.ok(authority.playbackOwner().handoff);assert.equal(f.elements.title.textContent,song.title);assert.equal(f.elements.position.textContent,'1:41');assert.match(f.elements['mode-status'].textContent,/12 秒/);
+    f.tick(2000);await f.elements.refresh.emit('click');await settle();
+    assert.equal(f.elements.title.textContent,song.title);assert.equal(f.elements.position.textContent,'1:41');assert.equal(f.elements.toggle.disabled,true);assert.match(f.elements.status.textContent,/已保留歌曲和进度/);
+    f.tick(10000);await f.elements.refresh.emit('click');await settle();
+    assert.equal(authority.playbackOwner().handoff,null);assert.equal(authority.playbackOwner().mode,'chatgpt');
+    const audio=f.elements['local-audio'];assert.match(audio.src,/\/widget-media\//);audio.readyState=1;await audio.emit('loadedmetadata');await settle();
+    assert.equal(audio.currentTime,101);assert.equal(audio.playCalls,0);assert.equal(f.elements.toggle.disabled,false);assert.match(f.elements.notice.textContent,/已超时收回播放权/);
+    await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);assert.equal(authority.nowPlaying().state,'playing');assert.equal(f.elements.title.textContent,song.title);
+    assert.equal(authority.reportNowPlaying({...phone,sequence:999,...song,positionMs:0,playing:false}),false);assert.equal(authority.nowPlaying().state,'playing');
   } finally {await f.close();}
 });

@@ -6,6 +6,7 @@
 
 const HEARTBEAT_STALE_MS = 60 * 1000;
 const PAUSE_VISIBLE_MS = 10 * 60 * 1000;
+const HANDOFF_TIMEOUT_MS = 12 * 1000;
 const { randomUUID } = require('node:crypto');
 
 function str(v, max) { const s = v == null ? '' : String(v).trim(); return s.slice(0, max); }
@@ -19,18 +20,26 @@ function createNowPlaying(options) {
   let selection = { mode:'pwa', epoch:0, sourceId:null }, handoff = null, resume = null, pwaSource = null;
   const switches = new Map();
   const snapshot = nowMs => cur ? { ...cur, positionMs:cur.playing ? Math.min(cur.durationMs || Infinity, cur.positionMs + Math.max(0,nowMs-cur.receivedAt)) : cur.positionMs } : null;
-  function finish(nowMs) {
+  function finish(nowMs, reason = 'acknowledged') {
     selection = { mode:handoff.target, epoch:selection.epoch+1, sourceId:handoff.target==='chatgpt' ? handoff.sourceId : pwaSource };
-    resume = { id:handoff.id, at:nowMs, ...handoff.snapshot };
+    resume = { ...handoff.snapshot, id:handoff.id, at:nowMs, reason };
+    // Revoking a suspended endpoint is not proof that its audio stopped.
+    // Preserve intent separately; a timeout always prepares paused, requiring a tap.
+    if (reason === 'timeout') { resume.requestedPlaying = !!resume.playing; resume.playing = false; }
     if (resume.songId) cur = { ...resume, playing:false, receivedAt:nowMs, pausedAt:nowMs };
     lease = null; handoff = null; revision++;
   }
-  function playback() {
+  function advance(nowMs) {
+    if (handoff && Number.isFinite(nowMs) && nowMs >= handoff.deadlineAt) finish(nowMs, 'timeout');
+  }
+  function playback(nowMs) {
+    advance(nowMs);
     return { ...selection, streamId, ownerSourceId:lease && !lease.closed ? lease.sourceId : null,
-      handoff:handoff ? { id:handoff.id, target:handoff.target, sourceId:handoff.sourceId, requestedAt:handoff.requestedAt } : null,
+      handoff:handoff ? { id:handoff.id, target:handoff.target, sourceId:handoff.sourceId, requestedAt:handoff.requestedAt, deadlineAt:handoff.deadlineAt, snapshot:handoff.snapshot ? {...handoff.snapshot} : null } : null,
       resume:resume ? { ...resume } : null };
   }
   function claim(input, nowMs) {
+    advance(nowMs);
     const sourceId = str(input?.sourceId, 80);
     if (!/^[A-Za-z0-9_-]{8,80}$/.test(sourceId)) return null;
     if ((input.playbackMode || 'pwa') !== selection.mode || handoff ||
@@ -47,18 +56,20 @@ function createNowPlaying(options) {
     return { sessionId: lease.sessionId, streamId, modeEpoch:selection.epoch };
   }
   function ordered(input, nowMs) {
+    advance(nowMs);
     if (!input?.sessionId) return !lease && selection.epoch === 0; // Fence V1 requests after a mode switch too.
     if (!lease || lease.closed || input.sessionId !== lease.sessionId || input.sourceId !== lease.sourceId ||
       !Number.isSafeInteger(input.sequence) || input.sequence <= lease.sequence) return false;
     lease.sequence = input.sequence; lease.seenAt = nowMs;
     return true;
   }
-  function version() { return { streamId, revision, observedAt: cur?.receivedAt ?? null }; }
+  function version(nowMs) { advance(nowMs); return { streamId, revision, observedAt: cur?.receivedAt ?? null }; }
   return {
     claim,
     version,
     playback,
     switchPlayback(input, nowMs) {
+      advance(nowMs);
       if (!['pwa','chatgpt'].includes(input.target) || !/^[A-Za-z0-9_-]{8,80}$/.test(input.sourceId || '') || !/^[A-Za-z0-9_-]{8,80}$/.test(input.requestId || '')) return { ok:false, error:'INVALID_SWITCH' };
       const signature = JSON.stringify([input.target,input.sourceId,input.expectedEpoch,input.expectedStreamId]);
       const previous = switches.get(input.requestId);
@@ -69,13 +80,14 @@ function createNowPlaying(options) {
         return { ok:false,error:'HANDOFF_PENDING' };
       }
       if (selection.mode === input.target && (input.target === 'pwa' || selection.sourceId === input.sourceId) && lease && !lease.closed) return { ok:true,playback:playback() };
-      handoff = { id:randomUUID(), target:input.target, sourceId:input.sourceId, requestedAt:nowMs, snapshot:snapshot(nowMs) };
+      handoff = { id:randomUUID(), target:input.target, sourceId:input.sourceId, requestedAt:nowMs, deadlineAt:nowMs+HANDOFF_TIMEOUT_MS, snapshot:snapshot(nowMs) };
       switches.set(input.requestId,signature); if (switches.size > 100) switches.delete(switches.keys().next().value);
-      // Never guess that a stale but previously playing endpoint has stopped.
+      // Prefer a physical stop acknowledgement; suspended iOS pages cannot poll.
       if ((!lease || lease.closed) && !cur?.playing) finish(nowMs);
       return { ok:true,playback:playback() };
     },
     acknowledgeHandoff(input, nowMs) {
+      advance(nowMs);
       if (!lease || !handoff || input.handoffId !== handoff.id || !ordered(input,nowMs)) return false;
       if (cur && cur.songId!==handoff.snapshot?.songId) handoff.snapshot=snapshot(nowMs);
       if (/^\d+$/.test(String(input.songId||''))) {
@@ -86,14 +98,15 @@ function createNowPlaying(options) {
       finish(nowMs); return true;
     },
     release(input, nowMs) {
+      advance(nowMs);
       if (!lease || !ordered(input,nowMs)) return false;
       if (cur) cur = { ...cur, positionMs:Math.max(0,Number(input.positionMs)||0), playing:false, receivedAt:nowMs, pausedAt:nowMs };
       lease.closed = true; revision++;
       if (handoff) finish(nowMs);
       return true;
     },
-    owns(input) { return !!(lease && !lease.closed && lease.sessionId === input.sessionId && lease.sourceId === input.sourceId); },
-    canClaim() { return selection.mode === 'pwa' && !handoff && (!lease || lease.closed || !lease.active); },
+    owns(input, nowMs) { advance(nowMs); return !!(lease && !lease.closed && lease.sessionId === input.sessionId && lease.sourceId === input.sourceId); },
+    canClaim(nowMs) { advance(nowMs); return selection.mode === 'pwa' && !handoff && (!lease || lease.closed || !lease.active); },
     // 前端每次状态变化和每 ~20 秒心跳都调这个
     report(input, nowMs) {
       const songId = str(input && input.songId, 32);
@@ -108,6 +121,7 @@ function createNowPlaying(options) {
         pausedAt: playing ? null : (wasPlaying || !cur || cur.songId !== songId || cur.pausedAt == null ? nowMs : cur.pausedAt),
         receivedAt: nowMs
       };
+      if (handoff) handoff.snapshot = snapshot(nowMs);
       revision++;
       return true;
     },
@@ -119,6 +133,7 @@ function createNowPlaying(options) {
     },
     // 返回 null（没在听）或 { state: 'playing'|'paused', ...，positionMs 按经过的时间外推 }
     current(nowMs) {
+      advance(nowMs);
       if (!cur) return null;
       if (nowMs - cur.receivedAt > staleMs) return null;
       if (!cur.playing && cur.pausedAt != null && nowMs - cur.pausedAt > pauseMs) return null;
@@ -128,4 +143,4 @@ function createNowPlaying(options) {
   };
 }
 
-module.exports = { createNowPlaying, HEARTBEAT_STALE_MS, PAUSE_VISIBLE_MS };
+module.exports = { createNowPlaying, HEARTBEAT_STALE_MS, PAUSE_VISIBLE_MS, HANDOFF_TIMEOUT_MS };

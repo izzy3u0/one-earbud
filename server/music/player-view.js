@@ -47,14 +47,18 @@ function createPlayerView({ authority, tool }) {
       playing = latest;
     }
     q = authority.queue.get();
-    const prepared = q.items.find(x => x.id === q.currentId);
+    const playback = authority.playbackOwner?.();
+    // A handoff is a prepared snapshot, not a fresh phone heartbeat. Keep it
+    // even for single/preview songs absent from the shared queue.
+    const saved = playback?.handoff?.snapshot;
+    const prepared = saved || (!current && playback?.resume?.songId ? playback.resume : null) || q.items.find(x => x.id === q.currentId);
     return {
       ok: true, kind: 'one-earbud-player', sampledAt: Date.now(), fresh: !!current,
       streamId:playing.streamId, revision:playing.revision, observedAt:playing.observedAt,
-      playback:authority.playbackOwner?.(),
+      playback,
       state: current ? playing.state : 'unknown', current,
-      prepared: !current && prepared ? song(prepared, safeCover(prepared.coverUrl)) : null,
-      positionMs: current ? playing.positionMs : 0,
+      prepared: (!current || saved) && prepared ? song(prepared, safeCover(prepared.coverUrl || q.items.find(x=>x.songId===prepared.songId)?.coverUrl)) : null,
+      positionMs: saved ? saved.positionMs : current ? playing.positionMs : playback?.resume?.positionMs || 0,
       lyricContext: current ? playing.lyricContext || null : null,
       queue: { count: q.items.length, mode: q.mode }
     };

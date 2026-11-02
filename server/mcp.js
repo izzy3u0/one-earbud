@@ -9,7 +9,7 @@ const { bearer, tokenMatches } = require('./auth');
 const { createPlayerView, playerViewSchema, COVER_ORIGINS } = require('./music/player-view');
 const { createPlayerControls } = require('./music/player-controls');
 const { createWidgetPlayback } = require('./music/widget-playback');
-const PLAYER_URI = 'ui://one-earbud/player-v2.html';
+const PLAYER_URI = 'ui://one-earbud/player-v2.1.html';
 const PLAYER_MIME = 'text/html;profile=mcp-app';
 const playerHtml = fs.readFileSync(path.join(__dirname, 'ui/player.html'), 'utf8');
 const legacyPlayerHtml = fs.readFileSync(path.join(__dirname, 'ui/player-v1.html'), 'utf8');
@@ -49,15 +49,15 @@ function mountMcp(app, { authority, token, publicUrl, oauth }) {
     const reply = result => ({ content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result, ...(result.ok === false ? { isError: true } : {}) });
     // Existing conversations may still have the V1 tool descriptor cached.
     server.registerResource('one-earbud-player-v1','ui://one-earbud/player-v1.html',{title:'Ash × Izzy · PWA 稳定卡片',mimeType:PLAYER_MIME},async()=>({contents:[{uri:'ui://one-earbud/player-v1.html',mimeType:PLAYER_MIME,text:legacyPlayerHtml,_meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:COVER_ORIGINS}}}}]}));
-    server.registerResource('one-earbud-player', PLAYER_URI, { title: 'Ash × Izzy · 分你一只耳机', mimeType: PLAYER_MIME }, async () => ({
-      contents: [{ uri: PLAYER_URI, mimeType: PLAYER_MIME, text: playerHtml.replace('const MEDIA_ORIGIN = null;','const MEDIA_ORIGIN = '+JSON.stringify(publicUrl || null)+';'), _meta: {
+    for (const [name,uri] of [['one-earbud-player',PLAYER_URI],['one-earbud-player-v2','ui://one-earbud/player-v2.html']]) server.registerResource(name, uri, { title: 'Ash × Izzy · 分你一只耳机', mimeType: PLAYER_MIME }, async () => ({
+      contents: [{ uri, mimeType: PLAYER_MIME, text: playerHtml.replace('const MEDIA_ORIGIN = null;','const MEDIA_ORIGIN = '+JSON.stringify(publicUrl || null)+';'), _meta: {
         ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [...COVER_ORIGINS,...(publicUrl?[publicUrl]:[])] } },
         'openai/widgetDescription': '粉色音乐卡：默认遥控手机 PWA，也可手动选择 ChatGPT 在卡片中播放。以当前播放端的实际心跳为准。',
         'openai/ui': { availableDisplayModes: ['inline'] }
       } }]
     }));
     server.registerTool('music_widget_playback', {
-      title:'音乐卡片播放端',description:'仅供卡片选择播放端、同步实际音频状态和沿用当前队列播放。不能伪造已出声；等待旧端确认停声后才能接管。',
+      title:'音乐卡片播放端',description:'仅供卡片选择播放端、同步实际音频状态和沿用当前队列播放。优先确认旧端停声；12 秒无确认则撤销旧会话，保留歌曲和进度，等待用户点播放，不能伪造已出声。',
       inputSchema:z.object({op:z.enum(['switch','claim','poll','report','release','ack','track']),sourceId:z.string().regex(/^[A-Za-z0-9_-]{8,80}$/),
         target:z.enum(['pwa','chatgpt']).optional(),requestId:z.string().min(8).max(80).optional(),expectedEpoch:z.number().int().nonnegative().optional(),expectedStreamId:z.string().max(80).optional(),
         sessionId:z.string().max(80).optional(),sequence:z.number().int().nonnegative().optional(),trackId:z.string().max(80).optional(),handoffId:z.string().max(80).optional(),

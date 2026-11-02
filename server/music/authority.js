@@ -53,8 +53,8 @@ function createMusicAuthority(options) {
     queue,
     requestPlayback(itemId) { return playback.publish(itemId); },
     requestPlayerControl(action, songId) { return playback.publishControl(action, songId); },
-    playbackSync(endpoint) { const q = queue.get(), owner=nowPlaying.playback(); return { queue: q, command: endpoint==='pwa' && (owner.mode!=='pwa'||owner.handoff) ? null : playback.current(q), playback:owner }; },
-    playbackOwner() { return nowPlaying.playback(); },
+    playbackSync(endpoint) { const q = queue.get(), owner=nowPlaying.playback(now()); return { queue: q, command: endpoint==='pwa' && (owner.mode!=='pwa'||owner.handoff) ? null : playback.current(q), playback:owner }; },
+    playbackOwner() { return nowPlaying.playback(now()); },
     switchPlayback(input) { return nowPlaying.switchPlayback(input,now()); },
     acknowledgeHandoff(input) { return nowPlaying.acknowledgeHandoff(input,now()); },
     releasePlayback(input) { return nowPlaying.release(input,now()); },
@@ -132,9 +132,9 @@ function createMusicAuthority(options) {
       return ok;
     },
     claimNowPlaying(input) { return nowPlaying.claim(input, now()); },
-    ownsNowPlaying(input) { return nowPlaying.owns(input); },
-    canClaimNowPlaying() { return nowPlaying.canClaim(); },
-    nowPlayingVersion() { return nowPlaying.version(); },
+    ownsNowPlaying(input) { return nowPlaying.owns(input, now()); },
+    canClaimNowPlaying() { return nowPlaying.canClaim(now()); },
+    nowPlayingVersion() { return nowPlaying.version(now()); },
     clearNowPlaying(input) { return nowPlaying.clear(input, now()); },
     nowPlaying() { return nowPlaying.current(now()); },
     async nowPlayingDetails() {

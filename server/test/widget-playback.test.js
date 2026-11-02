@@ -2,7 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {EventEmitter}=require('node:events'),{Readable}=require('node:stream');
-const {createNowPlaying}=require('../music/now-playing');
+const {createNowPlaying,HANDOFF_TIMEOUT_MS}=require('../music/now-playing');
 const {createMusicAuthority}=require('../music/authority');
 const {createApp}=require('../app');
 const {createWidgetPlayback,mediaUrl}=require('../music/widget-playback');
@@ -38,7 +38,7 @@ test('two-phase playback ownership fences old reports, claims, clears and switch
   assert.equal(state.switchPlayback({...first,target:'pwa'},3005).error,'REQUEST_ID_CONFLICT');
 });
 
-test('unreachable old endpoints are never assumed silent; cancel and closed-card recovery preserve position',()=>{
+test('pending handoffs can be cancelled before the deadline; closed-card recovery preserves position',()=>{
   const s=createNowPlaying(),p={sourceId:'phone-original-A'},lease=s.claim({...p,active:true},1000);
   s.report({...p,...lease,sequence:1,...song(1),playing:true,positionMs:40000},1000);
   s.switchPlayback(switchRequest(s,'chatgpt','widget-source-A','switch-first-req'),100000);
@@ -69,19 +69,116 @@ test('final stopped snapshot wins when a song changes during the handoff; repeat
   }
 });
 
-async function fixture(t){
+async function fixture(t,options={}){
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'earbud-v2-'));let now=Date.now();
   const authority=createMusicAuthority({now:()=>now,queueFile:path.join(dir,'queue.json'),store:{cookie:()=> 'TEST_PRIVATE_COOKIE',refreshCookie(){}},client:{songDetail:async(c,id)=>song(id),lyrics:async()=>({lines:[{index:0,timeMs:0,text:'Test lyric'}]}),playUrl:async(c,id)=>({url:'https://m701.music.126.net/test/'+id+'.mp3'})}});
   const {app}=createApp({authority,token:'TEST_WEB_TOKEN',mcpToken:'TEST_MCP_TOKEN',publicUrl:'https://music.example.test',dataDir:dir});
   const server=await new Promise(resolve=>{const s=app.listen(0,'127.0.0.1',()=>resolve(s));});const base='http://127.0.0.1:'+server.address().port;
   const client=new Client({name:'v2-test',version:'1'});await client.connect(new StreamableHTTPClientTransport(new URL(base+'/mcp'),{requestInit:{headers:{Authorization:'Bearer TEST_MCP_TOKEN'}}}));
   const calls=[];const api=async(route,opts={})=>{calls.push({route,body:opts.body&&structuredClone(opts.body)});const r=await fetch(base+route,{method:opts.method||'GET',headers:{Authorization:'Bearer TEST_WEB_TOKEN','Content-Type':'application/json'},body:opts.body?JSON.stringify(opts.body):undefined});assert.equal(r.status,200);return r.json();};
-  const p=phone({api,now:()=>now});
+  const p=phone({api:options.phoneApi?(route,opts)=>options.phoneApi(route,opts,api):api,now:()=>now});
   const widget=args=>client.callTool({name:'music_widget_playback',arguments:{sourceId:'widget-sdk-source',...args}});
   const read=async name=>(await client.callTool({name:'music_'+name,arguments:{}})).structuredContent;
   t.after(async()=>{p.hide();await wait(30);await client.close();await new Promise(resolve=>server.close(resolve));fs.rmSync(dir,{recursive:true,force:true});});
   return {authority,api,calls,p,widget,read,client,base,tick(ms){now+=ms;}};
 }
+
+test('suspended iPhone PWA cannot ACK: bounded takeover preserves an unqueued song past freshness and fences every late old write',async t=>{
+  const f=await fixture(t);await f.p.player.preview(song(1));
+  f.p.audio().currentTime=42;f.p.audio().fire('seeked');await wait(60);
+  const old=f.calls.filter(x=>x.route==='/api/music/now-playing'&&x.body?.sessionId).at(-1).body;
+  f.p.hide();assert.equal(f.p.intervals.size,0);assert.equal(f.p.audio().paused,false,'background PWA playback is preserved in V1');
+  f.tick(59000);
+  const owner=f.authority.playbackOwner();
+  const switched=await f.widget({op:'switch',target:'chatgpt',requestId:'suspended-phone-switch',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});
+  const pending=switched.structuredContent.playback.handoff,saved=pending.snapshot;
+  assert.equal(pending.deadlineAt-pending.requestedAt,HANDOFF_TIMEOUT_MS);assert.equal(saved.songId,'1');assert.ok(saved.positionMs>=101000);
+  f.tick(2000);const during=await f.read('player_state');
+  assert.equal(during.fresh,false,'preserved preparation is not a fresh phone heartbeat');assert.equal(during.current,null);assert.equal(during.prepared.songId,'1');assert.equal(during.positionMs,saved.positionMs);assert.equal(during.queue.count,0);
+  f.tick(HANDOFF_TIMEOUT_MS-2000);
+  // No process timer or phone request is needed: the next MCP read settles it.
+  const ready=await f.read('open_player'),selected=ready.playback;
+  assert.equal(selected.mode,'chatgpt');assert.equal(selected.epoch,1);assert.equal(selected.handoff,null);assert.equal(selected.ownerSourceId,null);
+  assert.equal(selected.resume.reason,'timeout');assert.equal(selected.resume.requestedPlaying,true);assert.equal(selected.resume.playing,false);assert.equal(ready.positionMs,saved.positionMs);
+  const claim=await f.widget({op:'claim',requestId:'suspended-phone-claim',expectedEpoch:selected.epoch,expectedStreamId:selected.streamId});
+  assert.equal(claim._meta.audio.song.songId,'1');assert.equal(claim._meta.audio.positionMs,saved.positionMs);assert.equal(claim._meta.audio.playing,false,'timeout must never autoplay over potentially suspended audio');
+  const before=f.authority.nowPlayingVersion().revision;
+  assert.equal((await f.api('/api/music/now-playing',{method:'POST',body:{...old,sequence:99999}})).accepted,false);
+  assert.equal((await f.api('/api/music/playback-handoff',{method:'POST',body:{...old,sequence:999999,handoffId:pending.id,positionMs:0}})).accepted,false);
+  assert.equal((await f.api('/api/music/now-playing/session',{method:'POST',body:{sourceId:old.sourceId,active:true,modeEpoch:0}})).accepted,false);
+  assert.equal(f.authority.nowPlayingVersion().revision,before);
+  f.p.show();await f.p.player.syncPlayback();await wait(60);assert.equal(f.p.audio().paused,true,'resumed old PWA stops when it learns ownership changed');
+  const audio=claim._meta.audio;
+  assert.equal((await f.widget({op:'report',...claim._meta.lease,sequence:1,trackId:audio.trackId,songId:'1',positionMs:audio.positionMs+1000,playing:true})).structuredContent.accepted,true);
+  const [state,card]=await Promise.all([f.read('now_playing'),f.read('player_state')]);assert.equal(state.state,'playing');assert.equal(state.playbackMode,'chatgpt');assert.equal(card.current.songId,state.songId);assert.equal(card.revision,state.revision);
+});
+
+test('deadline is enforced by a late report/ACK/claim even without polling; pending newest track wins',()=>{
+  for(const action of ['report','ack','claim','clear','release']){
+    const s=createNowPlaying(),p={sourceId:'phone-deadline-A'},lease=s.claim({...p,active:true},1000);
+    s.report({...p,...lease,sequence:1,...song(1),positionMs:42000,playing:true},1000);
+    s.switchPlayback(switchRequest(s,'chatgpt','widget-deadline-A','deadline-switch-'+action),2000);
+    const handoffId=s.playback().handoff.id;
+    s.report({...p,...lease,sequence:2,...song(2),positionMs:5000,playing:true},3000);
+    const body={...p,...lease,sequence:999,...song(9),positionMs:0,playing:false,handoffId,active:true,modeEpoch:0};
+    const result=action==='ack'?s.acknowledgeHandoff(body,14000):s[action](body,14000);
+    assert.ok(!result);assert.equal(s.playback().mode,'chatgpt');assert.equal(s.playback().resume.songId,'2');assert.equal(s.playback().resume.positionMs,5000);assert.equal(s.current(14000).state,'paused');
+    s.playback(99999);assert.equal(s.playback().epoch,1,'timeout is exactly once');
+  }
+});
+
+test('PWA ACK bypasses a hung heartbeat; late rejection cannot pause the renewed PWA lease',async t=>{
+  let held=false,release;
+  const f=await fixture(t,{phoneApi(route,opts,api){if(held&&route==='/api/music/now-playing'&&opts?.method==='POST'){held=false;return new Promise(resolve=>{release=()=>api(route,opts).then(resolve);});}return api(route,opts);}});
+  await f.p.player.playSingle(song(1));f.p.audio().currentTime=42;f.p.audio().fire('seeked');await wait(60);
+  held=true;f.p.timers(20000);await wait(20);assert.equal(typeof release,'function');
+  const owner=f.authority.playbackOwner();await f.widget({op:'switch',target:'chatgpt',requestId:'hung-heartbeat-switch',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});
+  const sync=f.p.player.syncPlayback();assert.equal(await Promise.race([sync.then(()=>true),wait(500).then(()=>false)]),true,'physical pause ACK must not wait for old fetch');
+  assert.equal(f.p.audio().paused,true);assert.equal(f.authority.playbackOwner().resume.playing,true);
+  const selected=f.authority.playbackOwner(),ready=await f.widget({op:'claim',requestId:'hung-heartbeat-claim',expectedEpoch:selected.epoch,expectedStreamId:selected.streamId});
+  await f.widget({op:'report',...ready._meta.lease,sequence:1,trackId:ready._meta.audio.trackId,songId:'1',positionMs:43000,playing:true});
+  await f.widget({op:'switch',target:'pwa',requestId:'hung-heartbeat-return',expectedEpoch:selected.epoch,expectedStreamId:selected.streamId,...ready._meta.lease,sequence:2,positionMs:43000});
+  await f.p.player.syncPlayback();await wait(40);assert.equal(f.p.audio().paused,false);
+  release();await wait(60);assert.equal(f.p.audio().paused,false,'late old-session rejection must not stop current session');
+});
+
+test('failed PWA ACK releases busy flag and retries the original physical-stop snapshot',async t=>{
+  let fail=true;
+  const f=await fixture(t,{phoneApi(route,opts,api){if(route==='/api/music/playback-handoff'&&fail){fail=false;return Promise.reject(new Error('simulated offline'));}return api(route,opts);}});
+  await f.p.player.playSingle(song(1));f.p.audio().currentTime=42;f.p.audio().fire('seeked');await wait(60);
+  const owner=f.authority.playbackOwner();await f.widget({op:'switch',target:'chatgpt',requestId:'failed-ACK-switch',expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});
+  await f.p.player.syncPlayback();assert.equal(f.p.audio().paused,true);assert.ok(f.authority.playbackOwner().handoff);
+  await f.p.player.syncPlayback();assert.equal(f.authority.playbackOwner().handoff,null);assert.equal(f.authority.playbackOwner().resume.positionMs,42000);assert.equal(f.authority.playbackOwner().resume.playing,true,'retry retains pre-pause intent');
+});
+
+test('wall-clock repeated suspended-phone handoffs stay bounded and restore PWA without old-state takeover',{skip:!process.env.ONE_EARBUD_HANDOFF_STABILITY_MS},async t=>{
+  const f=await fixture(t),started=Date.now(),duration=Number(process.env.ONE_EARBUD_HANDOFF_STABILITY_MS);let cycles=0,samples=0;
+  await f.p.player.playSingle(song(1));await wait(60);
+  while(Date.now()-started<duration){
+    f.p.audio().currentTime=42;f.p.audio().fire('seeked');await wait(40);
+    const old=f.calls.filter(x=>x.route==='/api/music/now-playing'&&x.body?.sessionId).at(-1).body;
+    f.p.hide();const owner=f.authority.playbackOwner();
+    await f.widget({op:'switch',target:'chatgpt',requestId:'wall-suspended-switch-'+cycles,expectedEpoch:owner.epoch,expectedStreamId:owner.streamId});
+    const switching=Date.now();let card;
+    do {
+      await wait(1000);f.tick(1000);card=await f.read('player_state');samples++;
+      assert.equal((card.current||card.prepared).songId,'1');assert.ok(card.positionMs>=42000);
+      if(card.playback.handoff)assert.equal(card.playback.epoch,owner.epoch);
+      assert.ok(Date.now()-switching<20000,'handoff must not hang');
+    }while(card.playback.handoff);
+    assert.ok(Date.now()-switching>=HANDOFF_TIMEOUT_MS-500);assert.equal(card.playback.resume.reason,'timeout');
+    assert.equal(card.playback.epoch,owner.epoch+1);assert.equal(card.playback.resume.playing,false);
+    const ready=await f.widget({op:'claim',requestId:'wall-suspended-claim-'+cycles,expectedEpoch:card.playback.epoch,expectedStreamId:owner.streamId});
+    await f.widget({op:'report',...ready._meta.lease,sequence:1,trackId:ready._meta.audio.trackId,songId:'1',positionMs:45000,playing:true});
+    assert.equal((await f.api('/api/music/now-playing',{method:'POST',body:{...old,sequence:99999}})).accepted,false);
+    f.p.show();await f.p.player.syncPlayback();assert.equal(f.p.audio().paused,true);
+    const state=await f.read('now_playing');assert.equal(state.playbackMode,'chatgpt');assert.equal(state.state,'playing');
+    await f.widget({op:'switch',target:'pwa',requestId:'wall-suspended-return-'+cycles,expectedEpoch:card.playback.epoch,expectedStreamId:owner.streamId,...ready._meta.lease,sequence:2,positionMs:45000});
+    await f.p.player.syncPlayback();await wait(40);assert.equal(f.p.audio().paused,false);assert.equal(f.p.audio().currentTime,45);
+    const back=await f.read('now_playing');assert.equal(back.playbackMode,'pwa');assert.equal(back.state,'playing');cycles++;
+  }
+  t.diagnostic(JSON.stringify({wallSeconds:Math.round((Date.now()-started)/1000),cycles,samples,stuckHandoffs:0,stateTakeovers:0}));
+});
 
 test('real SDK and actual PWA script hand over and back without overlap, position reset or old heartbeat takeover',async t=>{
   const f=await fixture(t);
