@@ -164,6 +164,30 @@ test('V2 single pink seek stays synchronized; hidden/offscreen playback continue
     audio.readyState=1;await audio.emit('loadedmetadata');await settle();assert.equal(audio.paused,true);
     await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);assert.equal(audio.playCalls,1);assert.equal(authority.nowPlaying().state,'playing');assert.equal(authority.nowPlaying().playbackMode,'chatgpt');
     assert.equal(f.elements.status.textContent,'ChatGPT正在播放');assert.equal(f.elements['current-line'].textContent,'Test lyric');
+    assert.equal(f.elements['pause-icon'].hidden,false);assert.equal(f.elements['play-icon'].hidden,true);
+    // The actual owned audio must win over a delayed paused server snapshot.
+    await f.message({jsonrpc:'2.0',method:'ui/notifications/tool-result',params:{structuredContent:{...await view(),state:'paused'}}});
+    assert.equal(f.elements.status.textContent,'ChatGPT正在播放');assert.equal(f.elements['pause-icon'].hidden,false);
+    f.document.hidden=true;f.intersect(false);await f.document.emit('visibilitychange');
+    audio.currentTime=12; // Audio keeps going while the chat is away; no playing event on return.
+    f.elements['play-icon'].hidden=false;f.elements['pause-icon'].hidden=true; // Cached presentation, not audio state.
+    f.document.hidden=false;const returning=f.document.emit('visibilitychange');
+    assert.equal(audio.paused,false);assert.equal(f.elements['pause-icon'].hidden,false,'return must resample audio before an RPC reply');assert.equal(f.elements['play-icon'].hidden,true);assert.equal(f.elements.toggle.getAttribute('aria-label'),'暂停 ChatGPT 播放');
+    assert.equal(f.elements.position.textContent,'0:12');await returning;f.intersect(true);await settle();
+    for(const event of ['focus','pageshow','openai:set_globals']){f.elements['pause-icon'].hidden=true;await f.window.emit(event);assert.equal(f.elements['pause-icon'].hidden,false);await settle();}
+    // A remounted observer must control the still-running owner, not start handoff.
+    const observer=fixture({audio:true,idPrefix:'observing-other-chat-'}),control=require('../music/player-controls').createPlayerControls({authority});
+    try {
+      await observer.initialize();observer.serveTools(async(name,args)=>name==='music_player_state'?{structuredContent:await view()}:name==='music_player_control'?{structuredContent:control(args)}:adapter.handle(args));
+      await observer.respond(observer.last(),{structuredContent:await view()});await settle();
+      assert.equal(observer.elements['local-audio'].paused,true);assert.equal(observer.elements['pause-icon'].hidden,false);
+      const before=authority.playbackOwner();await observer.elements.toggle.emit('click');await settle();
+      assert.equal(audio.paused,false,'pending control is not optimistic playback state');
+      f.tick(5000);await settle();assert.equal(audio.paused,true,'original owner receives pause through existing controls');
+      assert.equal(authority.playbackOwner().epoch,before.epoch);assert.equal(authority.playbackOwner().sourceId,before.sourceId);assert.equal(authority.playbackOwner().handoff,null);
+      await observer.elements.refresh.emit('click');await settle();assert.equal(observer.elements['play-icon'].hidden,false);assert.equal(observer.elements['pause-icon'].hidden,true);
+      await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);
+    }finally{await observer.close();}
     assert.equal(f.elements.progress.hidden,true);assert.equal(f.elements.seek.hidden,false);assert.equal(f.elements.seek.disabled,false);
     assert.match(html,/#seek::-webkit-slider-thumb/);assert.match(html,/#seek::-moz-range-thumb/);
     f.elements.seek.value=500;await f.elements.seek.emit('input');audio.currentTime=12;await audio.emit('timeupdate');assert.equal(f.elements.seek.value,500,'sampling must not fight a dragging finger');assert.equal(f.elements.seek.style['--fill'],'50%');
@@ -210,7 +234,28 @@ test('widget restoration displays a non-authoritative checkpoint without replayi
     await f.initialize();await f.respond(f.last(),{structuredContent:f.snapshot({fresh:false,current:null,prepared:null,playback:{mode:'chatgpt',epoch:1,sourceId:'another-widget',streamId:'stream-A',handoff:null}})});
     assert.equal(f.elements.title.textContent,'Saved song');assert.equal(f.elements.position.textContent,'1:03');assert.match(f.elements.status.textContent,/非实况/);assert.equal(f.elements['local-audio'].playCalls,0);
     assert.equal(f.elements.seek.disabled,true);assert.equal(f.sent.filter(x=>x.params?.name==='music_widget_playback'&&x.params.arguments.op==='claim').length,0);
+    assert.equal(f.elements['pause-icon'].hidden,true,'persisted actualPlaying=true is not proof of live playback');
   } finally {await f.close();}
+});
+
+test('returning/remounted ChatGPT UI shows pause for the still-playing owner and sends pause without acquiring audio',async()=>{
+  const f=fixture({audio:true,widgetState:{privateContent:{playback:{version:1,song:{songId:'123',title:'Old snapshot'},positionMs:1000,playbackIntent:false,actualPlaying:false}}}});
+  try {
+    await f.initialize();
+    const playback={mode:'chatgpt',epoch:3,streamId:'stream-live',sourceId:'widget-still-playing',ownerSourceId:'widget-still-playing',handoff:null,resume:null};
+    let state='playing';
+    f.serveTools(async(name)=>name==='music_player_state'?{structuredContent:f.snapshot({streamId:playback.streamId,revision:state==='playing'?30:31,playback,state})}:name==='music_player_control'?(state='paused',{structuredContent:{ok:true,message:'pending'}}):{structuredContent:{ok:true,playback}});
+    await f.respond(f.last(),{structuredContent:f.snapshot({streamId:playback.streamId,revision:30,playback})});
+    assert.equal(f.elements['local-audio'].paused,true,'restored observer has no local audio; another instance is still playing');
+    assert.equal(f.elements.status.textContent,'ChatGPT正在播放');assert.equal(f.elements['current-line'].textContent,'Current');
+    assert.equal(f.elements['play-icon'].hidden,true);assert.equal(f.elements['pause-icon'].hidden,false);assert.equal(f.elements.toggle.getAttribute('aria-label'),'暂停 ChatGPT 播放');
+    f.document.hidden=true;await f.document.emit('visibilitychange');f.document.hidden=false;await f.document.emit('visibilitychange');await flush();
+    assert.equal(f.elements['pause-icon'].hidden,false);
+    await f.elements.toggle.emit('click');await flush();const command=f.sent.filter(x=>x.params?.name==='music_player_control').at(-1);
+    assert.equal(command.params.name,'music_player_control');assert.equal(command.params.arguments.action,'pause');assert.equal(command.params.arguments.expectedSongId,'123');
+    assert.equal(f.sent.filter(x=>x.params?.name==='music_widget_playback'&&['switch','claim'].includes(x.params.arguments.op)).length,0);
+    assert.equal(f.elements.status.textContent,'ChatGPT已暂停');assert.equal(f.elements['pause-icon'].hidden,true);assert.equal(f.elements['play-icon'].hidden,false);
+  }finally{await f.close();}
 });
 
 test('actual card retains handoff song and progress past heartbeat expiry, then prepares paused audio after timeout without another switch',async t=>{

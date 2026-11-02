@@ -9,7 +9,7 @@ const { bearer, tokenMatches } = require('./auth');
 const { createPlayerView, playerViewSchema, COVER_ORIGINS } = require('./music/player-view');
 const { createPlayerControls } = require('./music/player-controls');
 const { createWidgetPlayback } = require('./music/widget-playback');
-const PLAYER_URI = 'ui://one-earbud/player-v2.2.html';
+const PLAYER_URI = 'ui://one-earbud/player-v2.3.html';
 const PLAYER_MIME = 'text/html;profile=mcp-app';
 const playerHtml = fs.readFileSync(path.join(__dirname, 'ui/player.html'), 'utf8');
 const legacyPlayerHtml = fs.readFileSync(path.join(__dirname, 'ui/player-v1.html'), 'utf8');
@@ -49,7 +49,7 @@ function mountMcp(app, { authority, token, publicUrl, oauth }) {
     const reply = result => ({ content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result, ...(result.ok === false ? { isError: true } : {}) });
     // Existing conversations may still have the V1 tool descriptor cached.
     server.registerResource('one-earbud-player-v1','ui://one-earbud/player-v1.html',{title:'Ash × Izzy · PWA 稳定卡片',mimeType:PLAYER_MIME},async()=>({contents:[{uri:'ui://one-earbud/player-v1.html',mimeType:PLAYER_MIME,text:legacyPlayerHtml,_meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:COVER_ORIGINS}}}}]}));
-    for (const [name,uri] of [['one-earbud-player',PLAYER_URI],['one-earbud-player-v2.1','ui://one-earbud/player-v2.1.html'],['one-earbud-player-v2','ui://one-earbud/player-v2.html']]) server.registerResource(name, uri, { title: 'Ash × Izzy · 分你一只耳机', mimeType: PLAYER_MIME }, async () => ({
+    for (const [name,uri] of [['one-earbud-player',PLAYER_URI],['one-earbud-player-v2.2','ui://one-earbud/player-v2.2.html'],['one-earbud-player-v2.1','ui://one-earbud/player-v2.1.html'],['one-earbud-player-v2','ui://one-earbud/player-v2.html']]) server.registerResource(name, uri, { title: 'Ash × Izzy · 分你一只耳机', mimeType: PLAYER_MIME }, async () => ({
       contents: [{ uri, mimeType: PLAYER_MIME, text: playerHtml.replace('const MEDIA_ORIGIN = null;','const MEDIA_ORIGIN = '+JSON.stringify(publicUrl || null)+';'), _meta: {
         ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [...COVER_ORIGINS,...(publicUrl?[publicUrl]:[])] } },
         'openai/widgetDescription': '粉色音乐卡：默认遥控手机 PWA，也可手动选择 ChatGPT 在卡片中播放。以当前播放端的实际心跳为准。',

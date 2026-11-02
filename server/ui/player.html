@@ -246,7 +246,7 @@
     async function connect() {
       if (window.parent === window) throw new Error('no_host');
       try {
-        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'2.2.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
+        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'2.3.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
         theme(result?.hostContext);
         notify('ui/notifications/initialized', {});
       } catch (error) {
@@ -268,16 +268,23 @@
     }
     function fmt(ms) { const s = Math.floor(Math.max(0, Number(ms) || 0) / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
     function fresh() { return !!(view?.fresh && view.current && Date.now() - receivedAt < 15000); }
+    function playbackStatus() {
+      const local=localOwner()&&localReady, current=local||fresh();
+      // One presentation source: actual owned audio, otherwise fresh authority.
+      // A UI instance without a lease may observe another still-playing widget.
+      const state=local?(!localAudio.paused&&!localAudio.ended?'playing':'paused'):current?view.state:'unknown';
+      return {local,current,state,playing:current&&state==='playing'};
+    }
     function render() {
-      const local=localOwner()&&localReady, chat=view?.playback?.mode==='chatgpt';
+      const status=playbackStatus(), {local,current}=status, chat=view?.playback?.mode==='chatgpt';
       const saved=view?.playback?.handoff?.snapshot, prepared=!!saved || (!fresh()&&!!view?.playback?.resume?.songId);
       const recovered=!local&&!saved&&!fresh()&&!view?.prepared&&view?.playback?.mode==='chatgpt'?checkpoint:null;
-      const current = local || fresh(), song = local ? localTrack.song : saved ? (view?.prepared || saved) : current ? view.current : view?.prepared || recovered?.song;
-      const playbackState=local ? (localAudio.paused?'paused':'playing') : view?.state;
+      const song = local ? localTrack.song : saved ? (view?.prepared || saved) : current ? view.current : view?.prepared || recovered?.song;
+      const playbackState=status.state;
       el['source-label'].textContent='分你一只耳机 · 声音来自 '+(chat?'ChatGPT':'PWA');
       el['playback-mode'].value=view?.playback?.handoff?.target||(chat?'chatgpt':'pwa');el['playback-mode'].disabled=!connected||busy||!view?.playback;
       const remaining=Math.max(0,Math.ceil(((view?.playback?.handoff?.deadlineAt||Date.now())-Date.now())/1000));
-      el['mode-status'].textContent=view?.playback?.handoff?'等待停声 · '+remaining+' 秒':chat?(localOwner()?'此卡片播放':'点播放接到此卡片'):'稳定模式 · 手机 PWA';
+      el['mode-status'].textContent=view?.playback?.handoff?'等待停声 · '+remaining+' 秒':chat?(localOwner()?'此卡片播放':status.playing?'当前播放端正在播放':'点播放接到此卡片'):'稳定模式 · 手机 PWA';
       el.title.textContent = song?.title || (view ? '此刻没有手机实况' : '分你一只耳机');
       el.artist.textContent = song?.artist || (view ? '打开 PWA，让这只耳机重新连上' : '正在连接手机播放器…');
       el.status.textContent = view?.playback?.handoff ? '切换中 · 已保留歌曲和进度' : current ? (chat?'ChatGPT':'手机')+(playbackState==='playing'?'正在播放':'已暂停') : recovered?'上次播放位置 · 非实况':song ? (prepared?'交接歌曲已准备 · 非实况':'队列中待播放 · 非实况') : chat?'ChatGPT 播放端未更新':'手机状态未更新';
@@ -301,7 +308,7 @@
       el.toggle.disabled = !connected || !(current || (chat&&song)) || busy || !!view?.playback?.handoff;
       el.previous.disabled = el.next.disabled = !connected || !current || busy || !view?.queue?.count || (chat&&!localOwner());
       el.refresh.disabled = !connected || reading;
-      const playing = current && playbackState === 'playing' && (!chat||localOwner());
+      const playing = status.playing;
       el['play-icon'].hidden = playing; el['pause-icon'].hidden = !playing;
       el.toggle.setAttribute('aria-label', chat?(playing?'暂停 ChatGPT 播放':'在此卡片播放'):playing ? '暂停手机播放' : '继续手机播放');
       const age = Number.isFinite(view?.observedAt) ? Math.max(0, view.sampledAt - view.observedAt) + Date.now() - receivedAt : Date.now() - receivedAt;
@@ -317,10 +324,14 @@
     }
     async function control(action) {
       if(view?.playback?.mode==='chatgpt') {
-        if(!localOwner()){await switchPlayback('chatgpt');return;}
-        activeUntil=Date.now()+300000;
-        if(action==='pause'){playbackIntent=false;resumeOnVisible=false;localAudio.pause();remember(true);}else if(action==='resume')playLocal();else await advance(action);
-        return;
+        if(localOwner()) {
+          activeUntil=Date.now()+300000;
+          if(action==='pause'){playbackIntent=false;resumeOnVisible=false;localAudio.pause();remember(true);}else if(action==='resume')playLocal();else await advance(action);
+          return;
+        }
+        // Observing a live owner is not a request to take over its audio.
+        // Pause via the existing bounded control channel; resume still opts in.
+        if(action!=='pause'||!fresh()){await switchPlayback('chatgpt');return;}
       }
       if (!fresh() || busy || !connected) return;
       const expectedSongId = view.current.songId;
@@ -335,7 +346,7 @@
       finally { busy = false; render(); await refresh(); }
     }
     el.refresh.addEventListener('click', () => refresh(true));
-    el.toggle.addEventListener('click', () => control(localOwner()?(localAudio.paused?'resume':'pause'):view?.state === 'playing' ? 'pause' : 'resume'));
+    el.toggle.addEventListener('click', () => control(playbackStatus().playing?'pause':'resume'));
     el['playback-mode'].addEventListener('change',()=>switchPlayback(el['playback-mode'].value));
     el.seek.addEventListener('input',()=>{if(localOwner()&&localReady){seekDragging=true;el.seek.style.setProperty('--fill',(Number(el.seek.value)/10)+'%');el.position.textContent=fmt(durationForLocal()*Number(el.seek.value));}});
     el.seek.addEventListener('change',()=>{seekDragging=false;if(localOwner()&&localReady){localAudio.currentTime=durationForLocal()*Number(el.seek.value)/1000;remember(true);reportAudio();render();}});
@@ -348,8 +359,15 @@
     document.addEventListener('visibilitychange', () => {
       remember(true);
       if(document.hidden){if(localOwner()&&localAudio.paused&&playbackIntent)resumeOnVisible=true;reportAudio();}
-      else {if(localOwner()&&localAudio.paused&&playbackIntent)resumeOnVisible=true;if(el.auto.checked||localOwner())refresh();}
+      else restorePresentation();
     });
+    function restorePresentation() {
+      if(stopped)return;
+      render(); // Re-sample audio synchronously, before any asynchronous RPC.
+      if(localOwner()&&localAudio.paused&&playbackIntent)resumeOnVisible=true;
+      if(el.auto.checked||localOwner())refresh();
+    }
+    window.addEventListener('focus',restorePresentation);
     let lastHeight = 0, lastWidth = 0;
     function sizeChanged() {
       if (!connected || stopped || typeof document.body?.getBoundingClientRect !== 'function') return;
@@ -363,11 +381,10 @@
     resizeObserver?.observe(document.body);
     const observer = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
       onscreen = entries.some(entry => entry.isIntersecting);
-      if(onscreen&&localOwner()&&localAudio.paused&&playbackIntent)resumeOnVisible=true;
-      if (onscreen && !document.hidden && el.auto.checked) refresh();
+      if (onscreen && !document.hidden) restorePresentation();
     }) : null;
     observer?.observe(document.body);
-    window.addEventListener('openai:set_globals', event => { if (mode === 'compatibility') accept({ structuredContent:event.detail?.globals?.toolOutput || window.openai?.toolOutput }); });
+    window.addEventListener('openai:set_globals', event => { if (mode === 'compatibility') accept({ structuredContent:event.detail?.globals?.toolOutput || window.openai?.toolOutput });render(); });
     function cleanup() {
       remember(true);
       ++ownerGeneration;
@@ -382,7 +399,7 @@
       window.removeEventListener('message', receive); render();
     }
     window.addEventListener('pagehide', event => {remember(true);if(!event.persisted)cleanup();});
-    window.addEventListener('pageshow', event => {if(event.persisted&&!stopped)refresh();});
+    window.addEventListener('pageshow',restorePresentation);
     timers.push(setInterval(() => {
       if(localOwner() && !localChanging){if(Date.now()-lastAudioAck>20000&&!localAudio.paused){resumeOnVisible=playbackIntent;localAudio.pause();el.notice.textContent='状态同步中断，已暂停 ChatGPT 音频，避免争抢播放权。';}if(Date.now()-lastAudioReport>=10000)reportAudio();}
       const audiblyActive=localOwner()&&!localAudio.paused;
