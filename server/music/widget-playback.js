@@ -11,6 +11,7 @@ function mediaUrl(value) {
 }
 function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstream = https.request }) {
   const sessions = new Map(), tickets = new Map(), writes = new Map(), acquisitions = new Map(), retiredInstances = new Set();
+  const picks=new Map();let pickVersion=0;
   const failure = (error,message) => ({ structuredContent:{ ok:false,error,message },isError:true,content:[{type:'text',text:message}] });
   function reply(extra = {}, meta = {}) {
     const result = { ok:true,playback:authority.playbackOwner(),...extra };
@@ -48,11 +49,35 @@ function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstr
     session.audio={song:{songId:String(song.songId),title:String(song.title||''),artist:String(song.artist||''),coverUrl:song.coverUrl||'',durationMs:Number(song.durationMs)||0},lyrics:song.lyrics||[],trackId,trackVersion:session.trackVersion,streamId:session.streamId,modeEpoch:session.modeEpoch,positionMs:session.positionMs,playing:session.playing,url:publicUrl+'/widget-media/'+token,expiresAt};
     return session.audio;
   }
+  async function pick(input,owner) {
+    const signature=JSON.stringify([input.sourceId,input.instanceId,input.sessionId,input.expectedStreamId,input.expectedEpoch,input.songId]);
+    const old=picks.get(input.requestId);
+    if(old)return old.signature===signature?old.promise:failure('REQUEST_ID_CONFLICT','重试标识不能用于另一首歌曲。');
+    if(!input.requestId||!/^\d{1,20}$/.test(input.songId)||input.expectedEpoch!==owner.epoch||input.expectedStreamId!==owner.streamId||owner.handoff)return failure('PLAYBACK_CHANGED','播放端已变化或仍在交接，请刷新后再选歌。');
+    const session=owner.mode==='chatgpt'?(input.sessionId?sessions.get(input.sessionId):[...sessions.values()].find(s=>s.sourceId===input.sourceId&&valid(s))):null;
+    if(owner.mode==='chatgpt'&&(!session||owner.sourceId!==input.sourceId||!valid(session)||(input.sessionId&&!valid(input))))return failure('PLAYBACK_CHANGED','请先将 ChatGPT 播放端接到此卡片，再选择歌曲。');
+    const version=++pickVersion,currentId=authority.queue.get().currentId;
+    const promise=(async()=>{
+      const song=await authority.song(input.songId),latest=authority.playbackOwner();
+      if(version!==pickVersion||authority.queue.get().currentId!==currentId||latest.streamId!==owner.streamId||latest.epoch!==owner.epoch||latest.mode!==owner.mode||latest.handoff||(session&&!valid(session)))return failure('PLAYBACK_CHANGED','歌曲或播放端已变化，请重新选择。');
+      const result=authority.queue.playNow({by:'you',song});
+      if(!session){authority.requestPlayback(result.queue.currentId);return reply({selected:true,pending:true});}
+      if(!input.sessionId){session.libraryCommandId=authority.requestPlayback(result.queue.currentId).id;return reply({selected:true,pending:true});}
+      // Same session, stream and epoch: only the selected track changes.
+      select(session,input.songId,0,true);session.intent=true;
+      const meta=input.sessionId?{lease:{sessionId:session.sessionId,sourceId:session.sourceId,sequence:session.sequence||0}}:{};
+      try {const audio=await descriptor(session);return reply({selected:true,pending:!input.sessionId},input.sessionId?{...meta,audio}:{});}
+      catch(_){return reply({selected:true,audioError:'这首暂时无法在 ChatGPT 播放，可重试或选择其他歌曲。'},meta);}
+    })();
+    picks.set(input.requestId,{signature,promise});if(picks.size>100)picks.delete(picks.keys().next().value);
+    try{const result=await promise;if(result.isError)picks.delete(input.requestId);return result;}catch(e){picks.delete(input.requestId);throw e;}
+  }
   async function run(input) {
     const owner=authority.playbackOwner();
     if(input.instanceId && retiredInstances.has(input.instanceId))return reply({accepted:false,attachmentLost:true});
     const inputSession=sessions.get(input.sessionId);
     if(inputSession?.instanceId && inputSession.instanceId!==input.instanceId)return reply({accepted:false,attachmentLost:true});
+    if(input.op==='pick')return pick(input,owner);
     if(input.op==='switch') {
       const result=authority.switchPlayback(input);
       if(!result.ok) return failure(result.error,'播放端已变化或仍在切换，请刷新后重试。');
@@ -68,7 +93,8 @@ function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstr
     }
     if(input.op==='report') {
       const session=sessions.get(input.sessionId);
-      if(!session || !valid(input) || input.trackId!==session.trackId || input.songId!==session.songId) return reply({accepted:false});
+      if(!session || !valid(input))return reply({accepted:false});
+      if(input.trackId!==session.trackId || input.songId!==session.songId)return reply({accepted:false,staleTrack:true});
       const accepted=authority.reportNowPlaying({...input,title:session.audio?.song.title||'',artist:session.audio?.song.artist||'',durationMs:session.audio?.song.durationMs||0});
       if(accepted) {session.positionMs=input.positionMs;session.playing=input.playing;session.intent=typeof input.playbackIntent==='boolean'?input.playbackIntent:input.playing;session.sequence=input.sequence;}
       return reply({accepted});
@@ -127,7 +153,7 @@ function createWidgetPlayback({ authority, publicUrl = '', now = Date.now, upstr
     const sync=authority.playbackSync(),command=sync.command && sync.command.at>(owner.resume?.at||0)?sync.command:null;
     if(command && session.commandId!==command.id && !command.action) {
       session.commandId=command.id;const item=sync.queue.items.find(x=>x.id===command.itemId);
-      if(item)select(session,item.songId,0,authority.nowPlaying()?.state==='playing');
+      if(item){const picked=session.libraryCommandId===command.id;select(session,item.songId,0,picked||authority.nowPlaying()?.state==='playing');if(picked)session.intent=true;}
     }
     let audio;
     const clientLease={sessionId:lease.sessionId,sourceId:session.sourceId,sequence:session.sequence||0};

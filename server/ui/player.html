@@ -23,11 +23,15 @@
     #seek::-webkit-slider-runnable-track{height:4px;border-radius:4px;background:linear-gradient(to right,var(--progress) var(--fill),var(--line) var(--fill))}
     #seek::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:16px;height:16px;margin-top:-6px;border:3px solid var(--paper);border-radius:50%;background:var(--progress);box-shadow:0 0 0 1px var(--progress)}
     #seek::-moz-range-track{height:4px;border-radius:4px;background:var(--line)}#seek::-moz-range-progress{height:4px;border-radius:4px;background:var(--progress)}#seek::-moz-range-thumb{width:10px;height:10px;border:3px solid var(--paper);border-radius:50%;background:var(--progress);box-shadow:0 0 0 1px var(--progress)}#seek:disabled{cursor:default;opacity:.6}
+    .library-nav{display:flex;gap:6px;margin:-6px 0 12px}.library-nav button,.library-head button,.library-pages button,.library-search button{border-radius:10px;padding:4px 10px;min-height:36px;color:var(--accent);font-size:12px}.library-nav button[aria-pressed="true"]{background:var(--soft);font-weight:600}.library-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}.library-head h2{margin:0;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.library-search{display:flex;gap:6px;margin-bottom:10px}.library-search input{width:100%;min-width:0;min-height:38px;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:var(--paper);color:var(--ink);font:inherit}.library-list{height:256px;overflow-y:auto;overscroll-behavior:contain}.library-row{display:flex;align-items:center;gap:10px;text-align:left;width:100%;min-height:58px;padding:7px;border-radius:12px}.library-row img{height:42px;width:42px;border-radius:8px;object-fit:cover;flex-shrink:0}.library-row span{min-width:0;display:block}.library-row strong,.library-row small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.library-row strong{font-size:13px;font-weight:550}.library-row small{font-size:11px;color:var(--muted)}.library-pages{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:10px;color:var(--muted)}.library-message,.library-feedback{font-size:11px;color:var(--muted);overflow-wrap:anywhere}.library-message{margin:6px 0;min-height:18px}.library-feedback:empty{display:none}.library-feedback{margin:0 0 8px}
   </style>
 </head>
 <body>
   <main class="card" aria-label="Ash × Izzy 音乐播放器">
     <header><div class="brand">Ash × Izzy<span id="source-label">分你一只耳机</span></div><button id="refresh" class="refresh" type="button" aria-label="刷新播放状态" disabled>刷新 ↻</button></header>
+    <nav class="library-nav" aria-label="音乐浏览"><button id="show-player" type="button" aria-pressed="true" disabled>播放器</button><button id="show-playlists" type="button" aria-pressed="false" disabled>我的歌单</button><button id="show-search" type="button" aria-pressed="false" disabled>搜索歌曲</button></nav>
+    <p id="library-feedback" class="library-feedback" role="status" aria-live="polite"></p>
+    <div id="player-panel">
     <div class="playback-choice"><label for="playback-mode">播放端</label><select id="playback-mode" disabled><option value="pwa">手机 PWA</option><option value="chatgpt">ChatGPT</option></select><span id="mode-status">稳定模式 · 手机 PWA</span></div>
     <section class="track" aria-label="歌曲信息">
       <div class="cover"><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><circle cx="20" cy="20" r="16"/><circle cx="20" cy="20" r="5"/><path d="M9 20a11 11 0 0 1 11-11"/></svg><img id="cover" alt="专辑封面" referrerpolicy="no-referrer" hidden></div>
@@ -40,6 +44,14 @@
       <button id="toggle" class="toggle" type="button" aria-label="播放" disabled><span id="play-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 4 12 8-12 8z"/></svg></span><span id="pause-icon" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg></span></button>
       <button id="next" type="button" aria-label="下一首" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5h2v14h-2zM5 5l11 7-11 7z"/></svg></button>
     </nav>
+    </div>
+    <section id="library-panel" aria-label="我的音乐" hidden>
+      <div class="library-head"><button id="library-back" type="button" aria-label="返回">‹ 返回</button><h2 id="library-title">我的歌单</h2></div>
+      <form id="library-search" class="library-search" hidden><label class="sr-only" for="library-query">歌曲或歌手</label><input id="library-query" type="search" maxlength="80" placeholder="歌曲或歌手" autocomplete="off"><button id="library-search-submit" type="submit">搜索</button></form>
+      <p id="library-message" class="library-message" role="status" aria-live="polite"></p>
+      <div id="library-list" class="library-list" aria-label="音乐列表" aria-busy="false"></div>
+      <div class="library-pages"><button id="library-prev" type="button">上一页</button><span id="library-page"></span><button id="library-next" type="button">下一页</button><button id="library-retry" type="button" hidden>重试</button></div>
+    </section>
     <footer class="footer"><div class="footer-row"><span id="updated">尚未刷新</span><label class="auto"><input id="auto" type="checkbox" checked>自动刷新</label></div><p id="notice" class="notice" role="status" aria-live="polite">正在连接播放器…</p></footer>
   </main>
   <audio id="local-audio" preload="metadata" playsinline></audio>
@@ -48,7 +60,7 @@
     'use strict';
     const $ = id => document.getElementById(id);
     const MEDIA_ORIGIN = null;
-    const elements = ['refresh','cover','title','artist','status','previous-line','current-line','translation','next-line','progress','position','duration','previous','toggle','next','play-icon','pause-icon','updated','auto','notice','local-audio','playback-mode','mode-status','source-label','seek'];
+    const elements = ['refresh','cover','title','artist','status','previous-line','current-line','translation','next-line','progress','position','duration','previous','toggle','next','play-icon','pause-icon','updated','auto','notice','local-audio','playback-mode','mode-status','source-label','seek','show-player','show-playlists','show-search','player-panel','library-panel','library-feedback','library-back','library-title','library-search','library-query','library-search-submit','library-message','library-list','library-prev','library-next','library-page','library-retry'];
     const el = Object.fromEntries(elements.map(id => [id, $(id)]));
     let view = null, receivedAt = 0, busy = false, reading = false, connected = false, stopped = false, onscreen = true;
     let mode = 'standard', rpcId = 0, hostOrigin = '*', lastPoll = 0, activeUntil = Date.now() + 300000;
@@ -65,6 +77,7 @@
     let mayAcquire=false,claimRequest=null,ownerGeneration=0,playbackIntent=false,resumeOnVisible=false,seekDragging=false,lastCheckpoint=0;
     let checkpoint=null;
     let notice=null;
+    let libraryPage='player',libraryRequest=0,libraryData=null,libraryArgs=null,libraryLoading=false,libraryPlaylist=null,playlistOffset=0,pickRetry=null,pickedSongId=null;
     function hydrateIdentity() {
       try {
         const saved=window.openai?.widgetState?.privateContent,client=saved?.playbackClient;
@@ -94,6 +107,61 @@
       const result=await callTool('music_widget_playback',{...args,sourceId,instanceId});
       playbackInfo(result.structuredContent?.playback);return result;
     }
+    function libraryNavigation(page) {
+      libraryPage=page;++libraryRequest;libraryLoading=false;
+      el['player-panel'].hidden=page!=='player';el['library-panel'].hidden=page==='player';
+      for(const [id,selected] of [['show-player',page==='player'],['show-playlists',page==='playlists'||page==='tracks'],['show-search',page==='search']])el[id].setAttribute('aria-pressed',String(selected));
+      el['library-search'].hidden=page!=='search';
+      el['library-title'].textContent=page==='tracks'?libraryPlaylist?.name||'歌单歌曲':page==='search'?'搜索歌曲':'我的歌单';
+    }
+    function libraryRows(data) {
+      el['library-list'].replaceChildren();el['library-list'].scrollTop=0;
+      for(const item of data.items){
+        const row=document.createElement('button');row.type='button';row.className='library-row';row.disabled=busy;
+        const cover=safeCover(item.coverUrl);if(cover){const img=document.createElement('img');img.src=cover;img.alt='';img.loading='lazy';img.referrerPolicy='no-referrer';img.addEventListener('error',()=>{img.hidden=true;});row.append(img);}
+        const labels=document.createElement('span'),title=document.createElement('strong'),detail=document.createElement('small');
+        title.textContent=data.op==='playlists'&&item.liked?'我喜欢的音乐':item.name||item.title||'未命名';
+        detail.textContent=data.op==='playlists'?item.count+' 首 · '+(item.liked?'喜欢':item.mine?'我创建的':'我收藏的'):item.artist||'未知歌手';
+        labels.append(title,detail);row.append(labels);row.addEventListener('click',()=>{
+          if(busy||libraryLoading)return;
+          if(data.op==='playlists'){playlistOffset=data.offset;libraryPlaylist=item;libraryNavigation('tracks');loadLibrary({op:'tracks',playlistId:item.playlistId,offset:0});}
+          else pickSong(item);
+        });el['library-list'].append(row);
+      }
+      el['library-message'].textContent=data.items.length?'点'+(data.op==='playlists'?'歌单查看歌曲':'一首歌在当前播放端播放')+(data.total>=data.limit?' · 本次最多读取 '+data.limit+' 项':''):(data.op==='search'?'没有找到歌曲，换个关键词试试。':'这个列表暂时没有内容。');
+      el['library-page'].textContent=data.total?(data.offset+1)+'–'+(data.offset+data.items.length)+' / '+data.total:'0 项';
+      el['library-prev'].disabled=data.offset===0;el['library-next'].disabled=data.nextOffset===null;
+    }
+    async function loadLibrary(args) {
+      if(!connected||stopped)return;
+      const request=++libraryRequest;libraryArgs=args;libraryLoading=true;libraryData=null;
+      el['library-message'].textContent='正在读取…';el['library-list'].replaceChildren();el['library-list'].setAttribute('aria-busy','true');
+      el['library-prev'].disabled=el['library-next'].disabled=true;el['library-page'].textContent='';el['library-retry'].hidden=true;
+      try {const result=await callTool('music_player_library',args);if(request!==libraryRequest||stopped)return;libraryData=result.structuredContent;libraryRows(libraryData);}
+      catch(error){if(request!==libraryRequest||stopped)return;el['library-message'].textContent=error.message==='bridge_timeout'?'读取超时，请重试。':error.message==='bridge_error'?'读取暂未完成，请重试。':error.message;el['library-retry'].hidden=false;}
+      finally{if(request===libraryRequest){libraryLoading=false;el['library-list'].setAttribute('aria-busy','false');}}
+    }
+    async function pickSong(song) {
+      if(busy||!view?.playback||stopped)return;
+      if(view.playback.handoff){el['library-message'].textContent='播放端正在交接，请等完成后再点歌。';return;}
+      busy=true;render();el['library-message'].textContent='正在准备《'+song.title+'》…';el['library-feedback'].textContent='';
+      try {
+        if(view.playback.mode==='chatgpt'&&!localOwner())await pollAudio();
+        await reportFlight;
+        const owner=view.playback;
+        if(owner.mode==='chatgpt'&&owner.sourceId!==sourceId)throw new Error('请先返回播放器，将 ChatGPT 播放端接到此卡片，再选择歌曲。');
+        const args=pickRetry?.songId===song.songId&&pickRetry.expectedEpoch===owner.epoch&&pickRetry.expectedStreamId===owner.streamId?pickRetry:{op:'pick',songId:song.songId,requestId:requestId(),expectedEpoch:owner.epoch,expectedStreamId:owner.streamId,...(localOwner()?localLease:{})};
+        pickRetry=args;
+        if(localOwner())stopAudio();
+        const result=await audioTool(args);
+        if(!result.structuredContent?.selected)throw new Error('播放端已变化，请刷新播放器后重试。');
+        pickRetry=null;pickedSongId=song.songId;if(owner.mode==='chatgpt'){localPlayed=true;playbackIntent=true;}activeUntil=Date.now()+300000;
+        applyAudio(result._meta?.audio,result._meta?.lease);
+        libraryNavigation('player');
+        el['library-feedback'].textContent=result.structuredContent.audioError||(result.structuredContent.pending?'已发送选歌，等待当前播放端加载。':'歌曲已准备；如未出声，请点播放。');
+      }catch(error){el['library-message'].textContent=error.message==='bridge_timeout'||error.message==='bridge_error'?'选歌尚未确认，请再点同一首歌重试。':error.message;reportAudio();}
+      finally{busy=false;render();await refresh();}
+    }
     function stopAudio() { localChanging=true;++localGeneration;reportPending=null;localAudio.pause();localChanging=false; }
     function reportAudio() {
       if(!localOwner() || !localReady || localChanging || stopped)return;
@@ -105,6 +173,7 @@
       reportFlight=(async()=>{
         while(reportPending && !stopped){const body=reportPending;reportPending=null;const result=await audioTool(body);
           if(body.sessionId!==localLease?.sessionId)continue;
+          if(result.structuredContent?.staleTrack||body.trackId!==localTrack?.trackId)continue;
           if(!result.structuredContent?.accepted){++ownerGeneration;stopAudio();localLease=null;mayAcquire=false;showNotice('播放权已交给另一端，请刷新后选择播放端。');break;}
           lastAudioAck=Date.now();
           if(view?.playback?.handoff){stopAudio();Promise.resolve().then(()=>pollAudio());}
@@ -261,7 +330,7 @@
     async function connect() {
       if (window.parent === window) throw new Error('no_host');
       try {
-        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'2.5.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
+        const result = await request('ui/initialize', { appInfo:{ name:'one-earbud-player', version:'2.6.0' }, appCapabilities:{ availableDisplayModes:['inline'] }, protocolVersion:'2026-01-26' });
         theme(result?.hostContext);
         notify('ui/notifications/initialized', {});
       } catch (error) {
@@ -310,6 +379,8 @@
     }
     function render() {
       const status=playbackStatus(), {local,current}=status, chat=view?.playback?.mode==='chatgpt';
+      for(const id of ['show-player','show-playlists','show-search','library-back','library-search-submit'])el[id].disabled=!connected||busy;
+      if(pickedSongId&&status.playing&&(local?localTrack.song.songId:view?.current?.songId)===pickedSongId){el['library-feedback'].textContent='';pickedSongId=null;}
       const saved=view?.playback?.handoff?.snapshot, prepared=!!saved || (!fresh()&&!!view?.playback?.resume?.songId);
       const recovered=!local&&!saved&&!fresh()&&!view?.prepared&&view?.playback?.mode==='chatgpt'?checkpoint:null;
       const song = local ? localTrack.song : saved ? (view?.prepared || saved) : current ? view.current : view?.prepared || recovered?.song;
@@ -385,6 +456,14 @@
       finally { busy = false; render(); await refresh(); }
     }
     el.refresh.addEventListener('click', () => refresh(true));
+    el['show-player'].addEventListener('click',()=>libraryNavigation('player'));
+    el['show-playlists'].addEventListener('click',()=>{libraryNavigation('playlists');loadLibrary({op:'playlists',offset:0});});
+    el['show-search'].addEventListener('click',()=>{libraryNavigation('search');libraryData=null;libraryArgs=null;el['library-list'].replaceChildren();el['library-message'].textContent='输入歌曲或歌手。';el['library-page'].textContent='';el['library-prev'].disabled=el['library-next'].disabled=true;el['library-retry'].hidden=true;});
+    el['library-search'].addEventListener('submit',event=>{event.preventDefault();const query=String(el['library-query'].value||'').trim().slice(0,80);if(!query){el['library-message'].textContent='请输入歌曲或歌手。';return;}loadLibrary({op:'search',query,offset:0});});
+    el['library-back'].addEventListener('click',()=>{if(libraryPage==='tracks'){libraryNavigation('playlists');loadLibrary({op:'playlists',offset:playlistOffset});}else libraryNavigation('player');});
+    el['library-prev'].addEventListener('click',()=>{if(libraryData&&!libraryLoading)loadLibrary({...libraryArgs,offset:Math.max(0,libraryData.offset-20)});});
+    el['library-next'].addEventListener('click',()=>{if(libraryData?.nextOffset!=null&&!libraryLoading)loadLibrary({...libraryArgs,offset:libraryData.nextOffset});});
+    el['library-retry'].addEventListener('click',()=>{if(libraryArgs&&!libraryLoading)loadLibrary(libraryArgs);});
     el.toggle.addEventListener('click', () => control(playbackStatus().playing?'pause':'resume'));
     el['playback-mode'].addEventListener('change',()=>switchPlayback(el['playback-mode'].value));
     el.seek.addEventListener('input',()=>{if(localOwner()&&localReady){seekDragging=true;el.seek.style.setProperty('--fill',(Number(el.seek.value)/10)+'%');el.position.textContent=fmt(durationForLocal()*Number(el.seek.value));}});

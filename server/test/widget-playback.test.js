@@ -83,6 +83,24 @@ async function fixture(t,options={}){
   return {authority,api,calls,p,widget,read,client,base,tick(ms){now+=ms;}};
 }
 
+test('SDK library picks reuse one ChatGPT owner over consecutive songs, dedupe concurrent retries and keep model and card views on confirmed audio',async t=>{
+  const f=await fixture(t),instanceId='mount-sdk-library';let p=f.authority.playbackOwner();
+  await f.widget({op:'switch',instanceId,target:'chatgpt',requestId:'sdk-library-switch',expectedEpoch:p.epoch,expectedStreamId:p.streamId});
+  p=f.authority.playbackOwner();const claimed=await f.widget({op:'claim',instanceId,requestId:'sdk-library-claim',expectedEpoch:p.epoch,expectedStreamId:p.streamId});
+  const lease=claimed._meta.lease;let previous,sequence=0;
+  for(let i=1;i<=12;i++){
+    const args={op:'pick',instanceId,...lease,songId:String(i),requestId:'sdk-library-song-'+i,expectedEpoch:p.epoch,expectedStreamId:p.streamId};
+    const [first,retry]=await Promise.all([f.widget(args),f.widget(args)]),audio=first._meta.audio;
+    assert.equal(audio.trackId,retry._meta.audio.trackId);assert.equal(audio.playing,true);assert.equal(audio.song.songId,String(i));
+    if(previous){const late=await f.widget({...previous,sequence:9999999,positionMs:0,playing:false});assert.equal(late.structuredContent.accepted,false);assert.equal(late.structuredContent.staleTrack,true);}
+    const report={op:'report',instanceId,...lease,sequence:++sequence,trackId:audio.trackId,songId:String(i),positionMs:3000,playing:true};
+    assert.equal((await f.widget(report)).structuredContent.accepted,true);previous=report;
+    const [now,card]=await Promise.all([f.read('now_playing'),f.read('player_state')]);assert.equal(now.songId,String(i));assert.equal(card.current.songId,String(i));assert.equal(card.revision,now.revision);assert.equal(now.playbackMode,'chatgpt');
+    assert.equal(f.authority.playbackOwner().epoch,p.epoch);assert.equal(f.authority.playbackOwner().handoff,null);assert.equal(f.authority.queue.get().items.length,i);
+    for(const result of [first,now,card])assert.doesNotMatch(JSON.stringify(result),/TEST_PRIVATE_COOKIE|TEST_MCP_TOKEN|TEST_WEB_TOKEN/);
+  }
+});
+
 test('suspended iPhone PWA cannot ACK: bounded takeover preserves an unqueued song past freshness and fences every late old write',async t=>{
   const f=await fixture(t);await f.p.player.preview(song(1));
   f.p.audio().currentTime=42;f.p.audio().fire('seeked');await wait(60);

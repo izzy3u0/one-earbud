@@ -10,7 +10,9 @@ const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function fixture(options = {}) {
   class Target {
-    constructor() { this.listeners = new Map(); this.attrs = {}; this.dataset = {}; this.style={setProperty:(k,v)=>{this.style[k]=v;}}; this.textContent = ''; this.hidden = false; this.disabled = true; this.checked = false; }
+    constructor() { this.listeners = new Map(); this.children=[]; this.attrs = {}; this.dataset = {}; this.style={setProperty:(k,v)=>{this.style[k]=v;}}; this.textContent = ''; this.hidden = false; this.disabled = true; this.checked = false; }
+    append(...nodes) {this.children.push(...nodes);}
+    replaceChildren(...nodes) {this.children=[...nodes];}
     addEventListener(type, fn) { this.listeners.set(type, [...this.listeners.get(type) || [], fn]); }
     removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(x => x !== fn)); }
     emit(type, value = {}) { return Promise.all((this.listeners.get(type) || []).map(fn => fn(value))); }
@@ -27,6 +29,7 @@ function fixture(options = {}) {
   const savedStates=[];window.openai={widgetState:options.widgetState,setWidgetState(value){this.widgetState=structuredClone(value);savedStates.push(this.widgetState);}};
   let intersect;
   document.getElementById = id => elements[id]; document.documentElement = { dataset:{} }; document.hidden = false;
+  document.createElement=()=>new Target();
   document.body = new Target(); document.body.getBoundingClientRect = () => ({ width:375, height:460 });
   const context = { window, document, URL, console, IntersectionObserver:class{constructor(callback){intersect=callback;}observe(){}disconnect(){}}, Date:class extends Date { static now() { return now; } },
     setTimeout(fn, ms) { const id=++timerId; timers.set(id, { fn, ms }); return id; }, clearTimeout(id) { timers.delete(id); },
@@ -73,6 +76,54 @@ test('MCP Apps widget initializes over the host bridge, renders safe data, and c
     assert.equal(f.elements['current-line'].textContent, '等手机回报新的播放状态');
     assert.equal(f.elements.status.textContent, '手机状态未更新');
   } finally { await f.close(); }
+});
+
+test('actual widget browses paged playlists, selects and plays a song in the existing ChatGPT lease, then searches and returns without changing ownership',async t=>{
+  const os=require('node:os'),{createMusicAuthority}=require('../music/authority'),{createTaMusicTool}=require('../agent/tool-contract');
+  const {createPlayerView}=require('../music/player-view'),{createWidgetPlayback}=require('../music/widget-playback'),{createPlayerLibrary}=require('../music/player-library');
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'earbud-library-ui-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const song=id=>({songId:String(id),title:id==='99'?'<img onerror="bad()">':'Song '+id,artist:'Artist',coverUrl:'https://p1.music.126.net/test.jpg',durationMs:180000});
+  const authority=createMusicAuthority({queueFile:path.join(dir,'queue.json'),store:{publicState:()=>({connected:true,profile:{userId:'987'}}),cookie:()=> 'TEST_ONLY_COOKIE',refreshCookie(){}},client:{
+    songDetail:async(c,id)=>song(id),lyrics:async()=>({lines:[{index:0,timeMs:0,text:'Chosen lyric'}]}),playUrl:async()=>({url:'https://m701.music.126.net/test.mp3'}),
+    userPlaylists:async()=>[{playlistId:'10',name:'Test list',mine:true,count:45},{playlistId:'11',name:'Liked',mine:true,liked:true,count:1}],playlistSongs:async()=>Array.from({length:45},(_,i)=>song(i+1)),search:async()=>[song('99')]
+  }});
+  authority.queue.append({by:'you',song:song('1')});
+  const view=createPlayerView({authority,tool:createTaMusicTool({authority})}),adapter=createWidgetPlayback({authority,publicUrl:'https://music.example.test'}),library=createPlayerLibrary({authority});
+  const f=fixture({audio:true}),settle=async()=>{for(let i=0;i<25;i++)await flush();};
+  let failLibrary=false,releaseRead,holdRead=false;
+  const handler=async(name,args)=>{
+    if(name==='music_player_state')return {structuredContent:await view()};
+    if(name==='music_player_library'){
+      if(failLibrary){failLibrary=false;return {isError:true,structuredContent:{ok:false,message:'测试读取失败，请重试。'}};}
+      const result={structuredContent:await library(args)};
+      if(holdRead){holdRead=false;return new Promise(r=>releaseRead=()=>r(result));}return result;
+    }
+    return adapter.handle(args);
+  };
+  let observer;
+  try {
+    await f.initialize();f.serveTools(handler);await f.respond(f.last(),{structuredContent:await view()});
+    await f.elements['show-playlists'].emit('click');await settle();assert.equal(f.elements['player-panel'].hidden,true);assert.equal(f.elements['library-panel'].hidden,false);assert.equal(f.elements['library-list'].children[0].children.at(-1).children[0].textContent,'我喜欢的音乐');assert.equal(authority.queue.get().items.length,1);
+    await f.elements['library-list'].children[1].emit('click');await settle();assert.equal(f.elements['library-title'].textContent,'Test list');assert.equal(f.elements['library-list'].children.length,20);
+    await f.elements['library-next'].emit('click');await settle();assert.equal(f.elements['library-page'].textContent,'21–40 / 45');
+    await f.elements['library-back'].emit('click');await settle();assert.equal(f.elements['library-title'].textContent,'我的歌单');
+    await f.elements['show-player'].emit('click');f.elements['playback-mode'].value='chatgpt';await f.elements['playback-mode'].emit('change');await settle();
+    const audio=f.elements['local-audio'];audio.readyState=1;await audio.emit('loadedmetadata');await f.elements.toggle.emit('click');await settle();assert.equal(audio.paused,false);
+    const before=authority.playbackOwner();failLibrary=true;await f.elements['show-playlists'].emit('click');await settle();assert.equal(f.elements['library-retry'].hidden,false);assert.match(f.elements['library-message'].textContent,/测试读取失败/);assert.equal(audio.paused,false);
+    await f.elements['library-retry'].emit('click');await settle();await f.elements['library-list'].children[1].emit('click');await settle();
+    const old=f.sent.filter(x=>x.params?.arguments?.op==='report').at(-1).params.arguments;
+    await f.elements['library-list'].children[1].emit('click');await settle();assert.equal(f.elements['player-panel'].hidden,false);assert.equal(f.elements['library-panel'].hidden,true);audio.readyState=1;await audio.emit('loadedmetadata');await settle();
+    assert.equal(audio.paused,false);assert.equal(authority.nowPlaying().songId,'2');assert.equal(f.elements.title.textContent,'Song 2');assert.equal(f.elements.position.textContent,'0:00');assert.equal(f.elements['current-line'].textContent,'Chosen lyric');assert.equal(f.elements['pause-icon'].hidden,false);assert.equal(f.elements['library-feedback'].textContent,'');
+    assert.equal(authority.playbackOwner().epoch,before.epoch);assert.equal(authority.playbackOwner().ownerSourceId,before.ownerSourceId);assert.equal(authority.playbackOwner().handoff,null);
+    assert.equal((await adapter.handle({...old,sequence:99999,playing:false,positionMs:0})).structuredContent.staleTrack,true);assert.equal(authority.nowPlaying().songId,'2');
+    // A new UI observing the still-playing mount selects remotely; it must not create sound.
+    observer=fixture({audio:true,idPrefix:'library-observer-',widgetState:f.savedStates.at(-1)});await observer.initialize();observer.serveTools(handler);await observer.respond(observer.last(),{structuredContent:await view()});await settle();
+    await observer.elements['show-playlists'].emit('click');await settle();await observer.elements['library-list'].children[1].emit('click');await settle();await observer.elements['library-list'].children[2].emit('click');await settle();
+    assert.equal(observer.elements['local-audio'].playCalls,0);assert.equal(audio.paused,false);f.tick(5000);await settle();audio.readyState=1;await audio.emit('loadedmetadata');await settle();assert.equal(authority.nowPlaying().songId,'3');assert.equal(audio.paused,false);assert.equal(authority.playbackOwner().handoff,null);
+    await f.elements['show-search'].emit('click');f.elements['library-query'].value='test';await f.elements['library-search'].emit('submit',{preventDefault(){}});await settle();assert.equal(f.elements['library-list'].children[0].children.at(-1).children[0].textContent,'<img onerror="bad()">');
+    await f.elements['library-list'].children[0].emit('click');await settle();audio.readyState=1;await audio.emit('loadedmetadata');await settle();assert.equal(authority.nowPlaying().songId,'99');assert.equal(audio.paused,false);
+    holdRead=true;await f.elements['show-playlists'].emit('click');await settle();await f.elements['show-player'].emit('click');releaseRead();await settle();assert.equal(f.elements['library-panel'].hidden,true,'late list response must not reopen a page');assert.equal(audio.paused,false);
+  }finally{if(observer)await observer.close();await f.close();}
 });
 
 test('widget controls stay pending until phone reports; retries reuse the same requestId', async () => {

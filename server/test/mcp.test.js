@@ -25,6 +25,9 @@ async function fixture(t, options = {}) {
       search: async (cookie, query) => { assert.equal(cookie, COOKIE); if (query === 'error') { const e = new Error(COOKIE + ' netease-auth.json ' + MCP); e.code = 'MUSIC_UPSTREAM_ERROR'; throw e; } return [{ ...song('123'), cookie }]; },
       songDetail: async (cookie, id) => ({ ...song(id), cookie }),
       lyrics: async () => ({ lines }),
+      account:async cookie=>({profile:{userId:'987'},cookie}),
+      userPlaylists:async(cookie,uid)=>{assert.equal(cookie,COOKIE);assert.equal(uid,'987');return [{playlistId:'1',name:'Created',count:25,mine:true},{playlistId:'2',name:'Collected',count:2,mine:false},{playlistId:'3',name:'Liked',count:5,mine:true,liked:true,cookie}];},
+      playlistSongs:async(cookie,id)=>{assert.equal(cookie,COOKIE);assert.match(id,/^\d+$/);return Array.from({length:25},(_,i)=>({...song(String(i+1)),cookie}));},
       playUrl: async (cookie, id) => ({ url: 'https://audio.example.test/' + id, cookie })
     }
   });
@@ -43,12 +46,24 @@ async function connect(t, url) {
 }
 const call = async (client, name, args = {}) => (await client.callTool({ name: 'music_' + name, arguments: args })).structuredContent;
 
+test('app library over authenticated MCP lists liked, created and collected playlists, pages tracks and searches without leaking cookies',async t=>{
+  const {url,authority}=await fixture(t),client=await connect(t,url);
+  const description=(await client.listTools()).tools.find(x=>x.name==='music_player_library');assert.deepEqual(description._meta.ui.visibility,['app']);assert.equal(description.annotations.readOnlyHint,true);
+  const lists=await call(client,'player_library',{op:'playlists'});assert.equal(lists.items[0].liked,true);assert.equal(lists.items[1].mine,true);assert.equal(lists.items[2].mine,false);
+  const tracks=await call(client,'player_library',{op:'tracks',playlistId:'1',offset:20});assert.equal(tracks.items.length,5);assert.equal(tracks.items[0].songId,'21');assert.equal(tracks.nextOffset,null);
+  const searched=await call(client,'player_library',{op:'search',query:'Test'});assert.equal(searched.items[0].songId,'123');
+  const invalid=await client.callTool({name:'music_player_library',arguments:{op:'tracks'}});assert.equal(invalid.isError,true);
+  const error=await client.callTool({name:'music_player_library',arguments:{op:'search',query:'error'}});assert.equal(error.isError,true);
+  for(const result of [lists,tracks,searched,error,invalid])assert.doesNotMatch(JSON.stringify(result),/TEST_ONLY_NEVER_REAL_COOKIE|netease-auth\.json|test-mcp-token-placeholder|"cookie"|"profile"|987/);
+  assert.equal(authority.queue.get().items.length,0);
+});
+
 test('MCP SDK initialize, tools/list, search, lyrics, share and safe errors', async t => {
   const { url } = await fixture(t);
   const client = await connect(t, url);
   assert.equal(client.getServerVersion().name, 'one-earbud');
   const listed = await client.listTools();
-  assert.deepEqual(listed.tools.map(x => x.name).sort(), ['now_playing','lyrics','search','queue','share','play_next','queue_add','play_now','open_player','player_state','player_control','widget_playback'].map(x => 'music_' + x).sort());
+  assert.deepEqual(listed.tools.map(x => x.name).sort(), ['now_playing','lyrics','search','queue','share','play_next','queue_add','play_now','open_player','player_state','player_control','widget_playback','player_library'].map(x => 'music_' + x).sort());
   assert.equal((await call(client, 'search', { query: 'Test' })).songs[0].songId, '123');
   assert.equal((await call(client, 'lyrics', { songId: '123' })).lines[1].trans, '测试 1');
   const share = await call(client, 'share', { songId: '123', note: 'Test', lineIndexes: [1] });
@@ -230,7 +245,7 @@ test('ChatGPT OAuth discovery, owner consent, PKCE, resource binding, refresh an
   assert.equal((await post('/token', exchange)).status, 400);
   const transport = new StreamableHTTPClientTransport(new URL(url + '/mcp'), { requestInit: { headers: { Authorization: 'Bearer ' + tokens.access_token } } });
   const sdk = new Client({ name: 'oauth-test', version: '1' }); await sdk.connect(transport); t.after(() => sdk.close());
-  assert.equal((await sdk.listTools()).tools.length, 12);
+  assert.equal((await sdk.listTools()).tools.length, 13);
   const oauthResource = await sdk.readResource({ uri: require('../mcp').PLAYER_URI });
   assert.equal(oauthResource.contents[0].mimeType, 'text/html;profile=mcp-app');
   assert.equal((await call(sdk, 'open_player')).kind, 'one-earbud-player');

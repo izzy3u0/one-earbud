@@ -7,7 +7,7 @@
 ## 怎么打开
 
 1. 等 Render 上这次 main 更新显示 **Live**。服务仍是 Free，无新增环境变量，不需要更换两个口令。
-2. 在 ChatGPT 的插件/应用详情页刷新工具信息，让它重新读取 app 专用工具和 `player-v2.5.html`。使用同一个 `/mcp` 地址与现有 OAuth，不需要更换口令。随后在新对话打开新卡片；旧卡片不会自动换脚本。
+2. 在 ChatGPT 的插件/应用详情页刷新工具信息，让它重新读取 app 专用工具和 `player-v2.6.html`。使用同一个 `/mcp` 地址与现有 OAuth，不需要更换口令。随后在新对话打开新卡片；旧卡片不会自动换脚本。
 3. 刷新或彻底重开手机 PWA，让手机收到新增控件逻辑。首次使用先在 PWA 手动播一首。
 4. 在新对话选择 **[Ash×Izzy] 分你一只耳机**，说“打开 Ash × Izzy 音乐卡片”或“用卡片显示我现在听的歌”。
 
@@ -18,6 +18,19 @@ AI 应调用 **`music_open_player`**。如果你说“放这首并打开播放�
 ## V2：选择声音从哪里播放
 
 卡片上方的“播放端”可以选 **手机 PWA / ChatGPT**，标题下方也会写明声音来源。
+
+### 我的歌单与搜索（V2.6）
+
+1. 打开新卡片，点 **我的歌单**，读取当前已登录网易云账号的创建、收藏歌单；**我喜欢的音乐**排在最前。使用原有账号和登录持久化，不新增登录或 secret。
+2. 歌单显示封面、名称、歌曲数和来源。点进去查看歌曲，显示歌名、歌手及可用封面；每页 20 项，在卡片内滚动，点上一页/下一页翻页。**返回**从歌曲回到歌单；**播放器**随时回到播放控件。
+3. 当前播放端选 **ChatGPT** 后点一首歌，卡片沿用当前播放会话加载音频并尝试播放，随后同步歌词、进度与服务端状态。首次或 iPhone 拒绝异步播放时，需再点中央播放按钮；准备好、指令已发送不等于已经出声。
+4. 从聊天返回的新 UI 如果正在观察同一卡片原来的音频，会把选歌交给原实例执行，不启动第二个音频，也不重新 handoff。若当前 ChatGPT 播放权属于另一张独立卡片，先在播放器里明确接管，再选歌。
+5. **手机 PWA**模式点歌沿用原队列/远程切歌通道，声音仍来自 PWA；未产生播放会话时仍需在手机点播放。浏览列表、搜索、翻页或返回本身不切歌、不换播放端。
+6. 点 **搜索歌曲**，输入歌名或歌手后搜索，再点结果播放。文字按普通文本显示，不执行歌名或歌单中的 HTML。
+
+沿用现有上游限制：最多读取 100 张歌单、每张前 500 首歌曲，搜索最多 20 首；列表元数据在服务内缓存约 60 秒，读失败可重试。点击只把所选歌曲放入共享队列，不替换或整份导入歌单；后续上下首继续使用现有队列与播放模式。歌曲版权、会员/试听和媒体加载限制照旧。
+
+旧的“切聊天回来偶尔残留 PWA 提示”问题按用户要求暂停，进度见 [OPEN-ISSUES.md](OPEN-ISSUES.md)。V2.6 不继续调整该提示的 hydration 或播放恢复逻辑；待本功能实机验收后再恢复排查。
 
 ### 手机 PWA → ChatGPT
 
@@ -80,10 +93,12 @@ ChatGPT 决定是否渲染 UI、是否允许按钮调用工具、是否要求确
 
 按照当前 [OpenAI UI 文档](https://developers.openai.com/plugins/build/chatgpt-ui) 和 [quickstart](https://developers.openai.com/plugins/build/app-quickstart) 使用 MCP Apps：
 
-- `music_open_player` 关联 `_meta.ui.resourceUri = ui://one-earbud/player-v2.5.html`，资源 MIME 为 `text/html;profile=mcp-app`。同时提供 ChatGPT 的 `openai/outputTemplate` 兼容别名。旧 `player-v2.html`、`player-v2.1.html`、`player-v2.2.html`、`player-v2.3.html`、`player-v2.4.html` 地址仍可读取修复后的模板。
+- `music_open_player` 关联 `_meta.ui.resourceUri = ui://one-earbud/player-v2.6.html`，资源 MIME 为 `text/html;profile=mcp-app`。同时提供 ChatGPT 的 `openai/outputTemplate` 兼容别名。旧 `player-v2.html`、`player-v2.1.html`、`player-v2.2.html`、`player-v2.3.html`、`player-v2.4.html`、`player-v2.5.html` 地址仍可读取修复后的模板。
 - 旧 `player-v1.html` 资源仍保留原 PWA 遥控脚本，避免已有连接缓存旧工具描述时找不到资源；它不获得 V2 音频能力。要使用 V2，刷新工具信息并打开新卡片。
 - 组件用标准 `ui/initialize`、`ui/notifications/tool-result`、`tools/call`、尺寸变更通知和 `ui/resource-teardown` 桥接；以 `window.parent` 校验消息来源。初始化声明只支持 inline；通过 ResizeObserver 上报卡片尺寸。优先标准桥接，旧宿主有 `window.openai.callTool` 时可降级兼容。
 - `music_player_state` 为只读、仅供 app 的刷新工具；视图适配层调用原有 `music_now_playing` 业务处理器、authority/queue 和缓存歌词，不重写网易云接口或 freshness 规则。
+- `music_player_library` 为只读、仅供 app 的账号歌单/歌单歌曲/搜索适配器，调用 `authority.playlists/sourceSongs/search`，UID 继续由现有 authority 从已保存 profile 或 account 接口获取。白名单输出列表元数据，不向组件提供 UID、Cookie 或账号资料，不请求新的 OAuth scope。
+- 用户点歌使用原 app 专用 `music_widget_playback` 的增量 `pick` 动作。服务端检查 stream/epoch/owner/instance、幂等 requestId 和异步读取前后的播放权；调用原 `authority.song`、`queue.playNow({by:'you'})`，沿用同一音频 descriptor/lease 或既有远程指令。旧歌曲报告仍拒绝写入，但明确标记 `staleTrack`，避免将迟到的旧歌报告误判为整个会话失去播放权。不变更 handoff、OAuth、Neon 或 PWA 内核。
 - `music_player_control` 仅供 app，接受四种操作、当前歌曲预期值和必填 requestId。它复用现有 `/api/music/playback-sync` 通道；PWA 调用原播放内核，按命令 ID 去重。服务端保留最近 100 个控件请求；同一次重试必须复用 requestId，重启或淘汰后不保证服务端去重。
 - `app` visibility 是宿主展示提示，不替代鉴权。读取 UI 资源和调用控件仍全部走原有 `/mcp` OAuth/Bearer 校验，原 `/api/music` 继续只接受网页口令。
 - 新增仅供 app 的 `music_widget_playback`，处理模式选择、停声确认、受会话/序号/trackId 约束的状态上报、释放和队列切歌。写操作有请求 ID 去重；音频会话和媒体地址只在工具 `_meta` 中交给组件，不放进模型可见的歌曲结果。

@@ -9,7 +9,8 @@ const { bearer, tokenMatches } = require('./auth');
 const { createPlayerView, playerViewSchema, COVER_ORIGINS } = require('./music/player-view');
 const { createPlayerControls } = require('./music/player-controls');
 const { createWidgetPlayback } = require('./music/widget-playback');
-const PLAYER_URI = 'ui://one-earbud/player-v2.5.html';
+const { createPlayerLibrary } = require('./music/player-library');
+const PLAYER_URI = 'ui://one-earbud/player-v2.6.html';
 const PLAYER_MIME = 'text/html;profile=mcp-app';
 const playerHtml = fs.readFileSync(path.join(__dirname, 'ui/player.html'), 'utf8');
 const legacyPlayerHtml = fs.readFileSync(path.join(__dirname, 'ui/player-v1.html'), 'utf8');
@@ -20,6 +21,7 @@ function mountMcp(app, { authority, token, publicUrl, oauth }) {
   const playerView = createPlayerView({ authority, tool });
   const playerControl = createPlayerControls({ authority });
   const widgetPlayback = createWidgetPlayback({ authority, publicUrl });
+  const playerLibrary = createPlayerLibrary({authority});
   app.get('/widget-media/:ticket',widgetPlayback.serve);
   const songId = z.string().regex(/^[0-9]{1,20}$/);
   const requestId = z.string().min(8).max(80).describe('重试必须复用同一个 requestId，避免重复加歌或切歌。').optional();
@@ -49,7 +51,7 @@ function mountMcp(app, { authority, token, publicUrl, oauth }) {
     const reply = result => ({ content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result, ...(result.ok === false ? { isError: true } : {}) });
     // Existing conversations may still have the V1 tool descriptor cached.
     server.registerResource('one-earbud-player-v1','ui://one-earbud/player-v1.html',{title:'Ash × Izzy · PWA 稳定卡片',mimeType:PLAYER_MIME},async()=>({contents:[{uri:'ui://one-earbud/player-v1.html',mimeType:PLAYER_MIME,text:legacyPlayerHtml,_meta:{ui:{prefersBorder:true,csp:{connectDomains:[],resourceDomains:COVER_ORIGINS}}}}]}));
-    for (const [name,uri] of [['one-earbud-player',PLAYER_URI],...['2.4','2.3','2.2','2.1','2'].map(v=>['one-earbud-player-v'+v,'ui://one-earbud/player-v'+v+'.html'])]) server.registerResource(name, uri, { title: 'Ash × Izzy · 分你一只耳机', mimeType: PLAYER_MIME }, async () => ({
+    for (const [name,uri] of [['one-earbud-player',PLAYER_URI],...['2.5','2.4','2.3','2.2','2.1','2'].map(v=>['one-earbud-player-v'+v,'ui://one-earbud/player-v'+v+'.html'])]) server.registerResource(name, uri, { title: 'Ash × Izzy · 分你一只耳机', mimeType: PLAYER_MIME }, async () => ({
       contents: [{ uri, mimeType: PLAYER_MIME, text: playerHtml.replace('const MEDIA_ORIGIN = null;','const MEDIA_ORIGIN = '+JSON.stringify(publicUrl || null)+';'), _meta: {
         ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [...COVER_ORIGINS,...(publicUrl?[publicUrl]:[])] } },
         'openai/widgetDescription': '粉色音乐卡：默认遥控手机 PWA，也可手动选择 ChatGPT 在卡片中播放。以当前播放端的实际心跳为准。',
@@ -58,12 +60,18 @@ function mountMcp(app, { authority, token, publicUrl, oauth }) {
     }));
     server.registerTool('music_widget_playback', {
       title:'音乐卡片播放端',description:'仅供卡片选择播放端、同步实际音频状态和沿用当前队列播放。优先确认旧端停声；12 秒无确认则撤销旧会话，保留歌曲和进度，等待用户点播放，不能伪造已出声。',
-      inputSchema:z.object({op:z.enum(['switch','claim','resume','poll','report','release','ack','track']),sourceId:z.string().regex(/^[A-Za-z0-9_-]{8,80}$/),instanceId:z.string().regex(/^[A-Za-z0-9_-]{8,80}$/).optional(),
+      inputSchema:z.object({op:z.enum(['switch','claim','resume','poll','report','release','ack','track','pick']),sourceId:z.string().regex(/^[A-Za-z0-9_-]{8,80}$/),instanceId:z.string().regex(/^[A-Za-z0-9_-]{8,80}$/).optional(),
         target:z.enum(['pwa','chatgpt']).optional(),requestId:z.string().min(8).max(80).optional(),expectedEpoch:z.number().int().nonnegative().optional(),expectedStreamId:z.string().max(80).optional(),
         sessionId:z.string().max(80).optional(),sequence:z.number().int().nonnegative().optional(),trackId:z.string().max(80).optional(),handoffId:z.string().max(80).optional(),
         songId:songId.optional(),title:z.string().max(160).optional(),artist:z.string().max(160).optional(),durationMs:z.number().finite().nonnegative().optional(),positionMs:z.number().finite().nonnegative().optional(),playing:z.boolean().optional(),playbackIntent:z.boolean().optional(),direction:z.enum(['next','previous','ended']).optional()}).strict(),
       annotations:{readOnlyHint:false,destructiveHint:true,idempotentHint:false,openWorldHint:true},_meta:{...security,ui:{visibility:['app']},'openai/widgetAccessible':true}
     },input=>widgetPlayback.handle(input));
+    server.registerTool('music_player_library', {
+      title:'我的歌单与歌曲搜索',description:'仅供用户在卡片浏览当前登录账号的创建/收藏歌单、喜欢的音乐及歌单歌曲，或搜索歌曲。只读，不导入或播放。',
+      inputSchema:z.object({op:z.enum(['playlists','tracks','search']),playlistId:z.string().regex(/^\d{1,32}$/).optional(),query:z.string().trim().min(1).max(80).optional(),offset:z.number().int().min(0).max(500).optional()}).strict(),
+      annotations:{readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:true},
+      _meta:{...security,ui:{visibility:['app']},'openai/widgetAccessible':true}
+    },async input=>reply(await playerLibrary(input)));
     for (const [name, visibility] of [['open_player', ['model', 'app']], ['player_state', ['app']]]) {
       server.registerTool('music_' + name, {
         title: name === 'open_player' ? 'Ash × Izzy · 分你一只耳机' : '刷新音乐卡片',
